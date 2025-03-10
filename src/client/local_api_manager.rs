@@ -1,0 +1,186 @@
+// use once_cell::sync::OnceCell;
+use crate::server::web::server::start_server;
+use crate::util::errors::{self, ApiError};
+use reqwest::{Client, StatusCode};
+use serde_json::Value;
+use std::collections::HashMap;
+use std::env;
+use std::time::Duration;
+
+#[derive(Debug)]
+pub struct ApiManager {
+    client: Client,
+    base_url: String,
+    server_port: u16,
+    server_timeout: Duration,
+    max_server_retries: u8,
+}
+
+impl ApiManager {
+    pub fn new() -> Self {
+        let base_url = env::var("SERVER_BASE_URL").expect("SERVER_BASE_URL must be set");
+        let max_server_retries = env::var("MAX_SERVER_RETRIES")
+            .expect("MAX_SERVER_RETRIES must be set")
+            .parse::<u8>()
+            .unwrap();
+        let server_port = env::var("SERVER_PORT")
+            .expect("SERVER_PORT must be set")
+            .parse::<u16>()
+            .unwrap();
+        let server_timeout = Duration::from_secs(
+            env::var("SERVER_TIMEOUT_SECONDS")
+                .expect("SERVER_TIMEOUT_SECONDS must be set")
+                .parse::<u64>()
+                .unwrap(),
+        );
+
+        return ApiManager {
+            client: Client::new(),
+            base_url,
+            server_port,
+            server_timeout,
+            max_server_retries,
+        };
+    }
+
+    // Method to check if server is running, and if not, start it
+    pub async fn check_server(&self, retry: u8) -> Result<(), ApiError> {
+        println!("BBBB");
+
+        let url = format!("{}/ping", self.base_url);
+
+        println!("URL: {}", url);
+
+        let response = self.client.get(&url).send().await;
+
+        if response.is_ok() && response.unwrap().status().as_u16() == 200 {
+            return Ok(());
+        } else {
+            if retry >= self.max_server_retries {
+                return Err(ApiError::InternalServerError);
+            }
+            let _ = start_server(self.server_port, self.server_timeout).await;
+            // self.check_server(retry + 1).await?;
+            return Ok(());
+        }
+    }
+
+    // Method for sending GET requests to the Spotify API
+    pub async fn get(
+        &mut self,
+        endpoint: &str,
+        params: Option<HashMap<&str, &str>>,
+    ) -> Result<(StatusCode, Value), ApiError> {
+        println!("AAAA");
+        // check if server is up, if not, start it
+        self.check_server(0).await?;
+
+        // construct and send request
+        let url = format!("{}/{}", self.base_url, endpoint);
+
+        println!("URL: {}", url);
+
+        let request = self.client.get(&url).query(&params.unwrap_or_default());
+
+        let response = match request.send().await {
+            Ok(res) => res,
+            Err(_) => return Err(ApiError::RequestError),
+        };
+
+        let status = response.status();
+
+        // match status code
+        match status.as_u16() {
+            200 => {
+                let json = match response.json::<Value>().await {
+                    Ok(data) => data,
+                    Err(_) => {
+                        return Err(ApiError::ResponseParseError);
+                    }
+                };
+                return Ok((status, json));
+            }
+            204 => Ok((status, serde_json::json!({}))),
+            _ => Err(errors::return_response_error(status)),
+        }
+    }
+
+    // Method for sending POST requests to the Spotify API
+    pub async fn post(
+        &mut self,
+        endpoint: &str,
+        body: Option<Value>,
+    ) -> Result<(StatusCode, Value), ApiError> {
+        // check if server is up, if not, start it
+        self.check_server(0).await?;
+
+        // construct and send request
+        let url = format!("{}/{}", self.base_url, endpoint);
+
+        let request = self.client.post(&url).json(&body.unwrap_or_default());
+
+        let response = match request.send().await {
+            Ok(res) => res,
+            Err(_) => return Err(ApiError::RequestError),
+        };
+
+        let status = response.status();
+
+        // match status code
+        match status.as_u16() {
+            200 => {
+                let json = match response.json::<Value>().await {
+                    Ok(data) => data,
+                    Err(_) => {
+                        return Err(ApiError::ResponseParseError);
+                    }
+                };
+                return Ok((status, json));
+            }
+            204 => Ok((status, serde_json::json!({}))),
+            _ => Err(errors::return_response_error(status)),
+        }
+    }
+
+    // Method for sending PUT requests to the Spotify API
+    pub async fn put(
+        &mut self,
+        endpoint: &str,
+        body: Option<Value>,
+    ) -> Result<(StatusCode, Value), ApiError> {
+        // check if server is up, if not, start it
+        self.check_server(0).await?;
+
+        // construct and send request
+        let url = format!("{}/{}", self.base_url, endpoint);
+
+        let request = self.client.put(&url).json(&body.unwrap_or_default());
+
+        let response = match request.send().await {
+            Ok(res) => res,
+            Err(_) => return Err(ApiError::RequestError),
+        };
+
+        let status = response.status();
+
+        // match status code
+        match status.as_u16() {
+            200 => {
+                let json = match response.json::<Value>().await {
+                    Ok(data) => data,
+                    Err(_) => {
+                        return Err(ApiError::ResponseParseError);
+                    }
+                };
+                return Ok((status, json));
+            }
+            204 => Ok((status, serde_json::json!({}))),
+            _ => Err(errors::return_response_error(status)),
+        }
+    }
+
+    // Example method to get devices (for demonstration purposes)
+    // pub async fn get_devices(&self) -> Result<(StatusCode, serde_json::Value), Error> {
+    //     self.get("me/player/devices", None).await
+    // }
+}
