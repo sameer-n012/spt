@@ -155,8 +155,11 @@ impl ApiManager {
         //     Ok(code) => code,
         //     Err(_) => Err(ApiError::InternalServerError),
         // };
+
         let code = {
             self.cb_auth_notifier.notified().await;
+            println!("ApiManager pointer in receiver: {:p}", self);
+            println!("CCCCC: {:?}", self.cb_auth_code);
             self.cb_auth_code
                 .take()
                 .ok_or(ApiError::InternalServerError)?

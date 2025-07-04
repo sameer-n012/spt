@@ -73,19 +73,28 @@ pub fn routes(
         .and(warp::path("currently-playing"))
         .and(warp::path::end())
         .and_then({
+            println!("here -1");
+
             let last_request_time = Arc::clone(&last_request_time);
             let api_manager = {
                 let m = server_meta.lock().unwrap();
-                m.api_manager.clone()
+                Arc::clone(&m.api_manager)
             };
 
             move || {
                 let last_request_time = Arc::clone(&last_request_time);
-                let mut api_manager = api_manager.clone();
+                let api_manager = Arc::clone(&api_manager);
 
                 async move {
                     update_last_request_time(&last_request_time);
-                    let res = api_manager.get("me/player/currently-playing", None).await;
+
+                    println!("api_manager pointer in now route {:p}", &api_manager);
+
+                    let res = api_manager
+                        .write()
+                        .unwrap()
+                        .get("me/player/currently-playing", None)
+                        .await;
 
                     match res {
                         Ok((status, json)) => Ok::<_, warp::Rejection>(warp::reply::with_status(
@@ -136,11 +145,33 @@ pub fn routes(
             let server_meta = Arc::clone(&server_meta);
             move |query: std::collections::HashMap<String, String>| {
                 let code = query.get("code").map(|s| s.to_owned());
-                let api_manager = &mut server_meta.lock().unwrap().api_manager; // Borrow the ApiManager
+                // let api_manager = &mut server_meta.lock().unwrap().api_manager; // Borrow the ApiManager
+
+                println!("Received auth code: {:?}", code);
 
                 // Set the cb_auth_code and notify the waiting task
-                api_manager.cb_auth_code = code;
-                api_manager.cb_auth_notifier.notify_one(); // Notify that the code is ready
+                // api_manager.cb_auth_code = code;
+                // println!("Set auth code: {:?}", api_manager.cb_auth_code);
+                // api_manager.cb_auth_notifier.notify_one(); // Notify that the code is ready
+
+                if let Some(code) = query.get("code") {
+                    {
+                        let api_manager =
+                            &mut server_meta.lock().unwrap().api_manager.write().unwrap();
+                        api_manager.cb_auth_code = Some(code.clone());
+                        println!("ApiManager pointer in callback: {:p}", api_manager);
+                        println!(
+                            "Received auth code and set it: {:?}",
+                            api_manager.cb_auth_code
+                        );
+                    }
+
+                    {
+                        let api_manager =
+                            &mut server_meta.lock().unwrap().api_manager.read().unwrap();
+                        api_manager.cb_auth_notifier.notify_one();
+                    }
+                }
 
                 update_last_request_time(&last_request_time);
                 return warp::reply::html("Authorization received. You may close this tab.");

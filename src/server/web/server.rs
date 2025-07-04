@@ -1,6 +1,6 @@
 use std::env;
 use std::net::SocketAddr;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
 use tokio::sync::oneshot;
 use tokio::time;
@@ -14,7 +14,7 @@ pub struct ServerMeta {
     pub inactivity_timeout: Duration,
     pub db_url: String,
     pub db_port: u16,
-    pub api_manager: ApiManager,
+    pub api_manager: Arc<RwLock<ApiManager>>,
 }
 
 pub async fn start_server(
@@ -35,7 +35,7 @@ pub async fn start_server(
             .expect("DB_PORT must be set")
             .parse::<u16>()
             .unwrap(),
-        api_manager: ApiManager::new(),
+        api_manager: Arc::new(RwLock::new(ApiManager::new())),
     }));
 
     // Shutdown signal
