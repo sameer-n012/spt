@@ -1,13 +1,13 @@
-use crate::client::local_api_manager::ApiManager;
+use crate::client::local_api_manager::ApiProxy;
 
 #[derive(Debug)]
 pub struct PlaybackManager<'a> {
     curr_device_id: Option<String>,
-    api_manager: &'a mut ApiManager,
+    api_manager: &'a mut ApiProxy,
 }
 
 impl<'a> PlaybackManager<'a> {
-    pub fn new(api_manager: &'a mut ApiManager) -> Self {
+    pub fn new(api_manager: &'a mut ApiProxy) -> Self {
         return PlaybackManager {
             curr_device_id: None,
             api_manager,

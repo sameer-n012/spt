@@ -1,12 +1,15 @@
+use std::collections::HashMap;
 use std::env;
 use std::net::SocketAddr;
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
+use tokio::sync::{Mutex, RwLock};
+
 use tokio::sync::oneshot;
 use tokio::time;
 
 use crate::server::web::routes;
-use crate::server::web::spt_api_manager::ApiManager;
+use crate::server::web::spt_api_proxy::ApiProxy;
 
 #[derive(Debug)]
 pub struct ServerMeta {
@@ -14,7 +17,9 @@ pub struct ServerMeta {
     pub inactivity_timeout: Duration,
     pub db_url: String,
     pub db_port: u16,
-    pub api_manager: Arc<RwLock<ApiManager>>,
+    pub api_proxies: Arc<HashMap<u64, Arc<ApiProxy>>>,
+    pub next_client_id: Arc<Mutex<u64>>,
+    pub last_request_time: Arc<Mutex<Instant>>,
 }
 
 pub async fn start_server(
@@ -27,7 +32,7 @@ pub async fn start_server(
     let last_request_time = Arc::new(Mutex::new(Instant::now()));
     // let last_request_time_clone = Arc::clone(&last_request_time);
 
-    let server_meta = Arc::new(Mutex::new(ServerMeta {
+    let server_meta = ServerMeta {
         port,
         inactivity_timeout,
         db_url: env::var("DB_URL").expect("DB_URL must be set"),
@@ -35,13 +40,19 @@ pub async fn start_server(
             .expect("DB_PORT must be set")
             .parse::<u16>()
             .unwrap(),
-        api_manager: Arc::new(RwLock::new(ApiManager::new())),
-    }));
+        api_proxies: Arc::new(HashMap::new()),
+        next_client_id: Arc::new(Mutex::new(1)),
+        last_request_time: last_request_time,
+    };
 
-    // Shutdown signal
+    // Shutdown signal - TODO delete
     let (_, shutdown_rx) = oneshot::channel();
 
-    let routes = routes::routes(server_meta, Arc::clone(&last_request_time));
+    let routes = routes::routes(
+        Arc::clone(&server_meta.api_proxies),
+        Arc::clone(&server_meta.next_client_id),
+        Arc::clone(&server_meta.last_request_time),
+    );
 
     // Start the server with graceful shutdown
     let addr = SocketAddr::from(([127, 0, 0, 1], port));
@@ -49,13 +60,13 @@ pub async fn start_server(
         addr,
         handle_shutdown(
             shutdown_rx,
-            Arc::clone(&last_request_time),
+            Arc::clone(&server_meta.last_request_time),
             inactivity_timeout,
         ),
     );
 
     println!("Server running at http://{}/", addr);
-    env::set_var("SPT_RUST_APP_SERVER_RUNNING", "1");
+    env::set_var("SPT_RUST_APP_SERVER_RUNNING", "1"); // TODO delete (unsafe)
     tokio::spawn(server);
 
     Ok(())
@@ -64,7 +75,7 @@ pub async fn start_server(
 async fn check_inactive(last_request_time: Arc<Mutex<Instant>>, timeout: Duration) {
     loop {
         time::sleep(timeout).await;
-        let last_time = *last_request_time.lock().unwrap();
+        let last_time = *last_request_time.lock().await;
         if last_time.elapsed() >= timeout {
             break;
         }

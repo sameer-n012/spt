@@ -5,7 +5,7 @@ mod server {
     pub mod web {
         pub mod routes;
         pub mod server;
-        pub mod spt_api_manager;
+        pub mod spt_api_proxy;
     }
 }
 
@@ -46,7 +46,11 @@ async fn main() {
 
     dotenv().ok();
 
-    let mut api_manager = client::local_api_manager::ApiManager::new();
+    let mut api_manager = client::local_api_manager::ApiProxy::new();
+    if let Err(e) = api_manager.setup().await {
+        eprintln!("Error setting up API manager: {:?}", e);
+        return;
+    }
 
     client::cli::cli_app::run_cli(&mut api_manager).await;
 }

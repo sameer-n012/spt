@@ -8,15 +8,16 @@ use std::env;
 use std::time::Duration;
 
 #[derive(Debug)]
-pub struct ApiManager {
+pub struct ApiProxy {
     client: Client,
+    client_id: Option<u64>,
     base_url: String,
     server_port: u16,
     server_timeout: Duration,
     max_server_retries: u8,
 }
 
-impl ApiManager {
+impl ApiProxy {
     pub fn new() -> Self {
         let base_url = env::var("SERVER_BASE_URL").expect("SERVER_BASE_URL must be set");
         let max_server_retries = env::var("MAX_SERVER_RETRIES")
@@ -34,13 +35,59 @@ impl ApiManager {
                 .unwrap(),
         );
 
-        return ApiManager {
+        let api_manager = ApiProxy {
             client: Client::new(),
+            client_id: None,
             base_url,
             server_port,
             server_timeout,
             max_server_retries,
         };
+
+        return api_manager;
+    }
+
+    pub async fn setup(&mut self) -> Result<(), ApiError> {
+        // This method is  used to perform any setup required for the API manager
+
+        self.check_server(0).await?;
+
+        let client_id =
+            ApiProxy::get_client_id(&self.client, format!("{}/{}", self.base_url, "init")).await;
+
+        match client_id {
+            Ok(id) => {
+                self.client_id = Some(id.trim_matches('"').parse::<u64>().unwrap_or(0));
+                return Ok(());
+            }
+            Err(_) => {
+                return Err(ApiError::InternalServerError);
+            }
+        }
+    }
+
+    async fn get_client_id(client: &Client, url: String) -> Result<String, ApiError> {
+        let response = client.get(&url).send().await;
+        if response.is_ok() {
+            let response = response.unwrap();
+            let status = response.status();
+
+            // match status code
+            match status.as_u16() {
+                200 => {
+                    let json = match response.json::<Value>().await {
+                        Ok(data) => data,
+                        Err(_) => {
+                            return Err(ApiError::ResponseParseError);
+                        }
+                    };
+                    return Ok(json["client_id"].to_string());
+                }
+                _ => Err(errors::return_response_error(status)),
+            }
+        } else {
+            return Err(ApiError::InternalServerError);
+        }
     }
 
     // Method to check if server is running, and if not, start it
@@ -73,7 +120,7 @@ impl ApiManager {
     ) -> Result<(StatusCode, Value), ApiError> {
         println!("AAAA");
         // check if server is up, if not, start it
-        self.check_server(0).await?;
+        // self.check_server(0).await?;
 
         // construct and send request
         let url = format!("{}/{}", self.base_url, endpoint);
@@ -112,7 +159,7 @@ impl ApiManager {
         body: Option<Value>,
     ) -> Result<(StatusCode, Value), ApiError> {
         // check if server is up, if not, start it
-        self.check_server(0).await?;
+        // self.check_server(0).await?;
 
         // construct and send request
         let url = format!("{}/{}", self.base_url, endpoint);
@@ -149,7 +196,7 @@ impl ApiManager {
         body: Option<Value>,
     ) -> Result<(StatusCode, Value), ApiError> {
         // check if server is up, if not, start it
-        self.check_server(0).await?;
+        // self.check_server(0).await?;
 
         // construct and send request
         let url = format!("{}/{}", self.base_url, endpoint);

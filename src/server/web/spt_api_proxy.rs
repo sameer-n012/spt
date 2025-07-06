@@ -10,47 +10,74 @@ use std::env;
 use std::iter;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
-use tokio::sync::Notify;
+use tokio::sync::{Notify, RwLock};
 use url::Url;
 
 #[derive(Debug, Clone)]
-pub struct ApiManager {
-    client: Client,
-    base_url: String,
-    client_id: String,
-    client_secret: String,
+struct AuthInfo {
+    // these should be locked together
     access_token: Option<(String, SystemTime)>, // (token, expiry time)
     refresh_token: Option<String>,
-    callback_uri: String,
-    backoff: SystemTime, // time to start api calls again
+    cb_auth_code: Option<String>,
+}
+
+#[derive(Debug)]
+pub struct ApiProxy {
+    client: Client,
+
+    application_id: String,
+    application_secret: String,
     scope: String,
-    pub cb_auth_code: Option<String>,
+
+    base_url: String,
+    callback_url: String,
+    backoff: SystemTime, // time to start api calls again
+
+    user_client_id: u64, // unique client id for each user, each user gets their own ApiProxy
+    auth_info: RwLock<AuthInfo>,
     pub cb_auth_notifier: Arc<Notify>,
 }
 
-impl ApiManager {
-    pub fn new() -> Self {
+impl ApiProxy {
+    pub fn new(user_client_id: u64) -> Self {
         let client_id = env::var("SPT_API_CLIENT_ID").expect("SPT_API_CLIENT_ID must be set");
         let client_secret =
             env::var("SPT_API_CLIENT_SECRET").expect("SPT_API_CLIENT_SECRET must be set");
         let base_url = env::var("SPT_API_BASE_URL").expect("SPT_API_BASE_URL must be set");
-        let callback_uri =
+        let callback_url =
             env::var("SERVER_CALLBACK_URL").expect("SERVER_CALLBACK_URL must be set");
         let scope = env::var("SPT_API_SCOPE").expect("SPT_API_SCOPE must be set");
 
-        return ApiManager {
+        return ApiProxy {
             client: Client::new(),
-            base_url,
-            client_id,
-            client_secret,
-            access_token: None,
-            refresh_token: None,
-            callback_uri,
-            backoff: SystemTime::now(),
+
+            application_id: client_id,
+            application_secret: client_secret,
             scope,
-            cb_auth_code: None,
+
+            base_url,
+            callback_url,
+            backoff: SystemTime::now(),
+
+            user_client_id,
+            auth_info: RwLock::new(AuthInfo {
+                access_token: None,
+                refresh_token: None,
+                cb_auth_code: None,
+            }),
             cb_auth_notifier: Arc::new(Notify::new()),
         };
+    }
+
+    pub async fn set_cb_auth_code(&self, code: String) {
+        let mut auth_info = self.auth_info.write().await;
+        auth_info.cb_auth_code = Some(code);
+        self.cb_auth_notifier.notify_one();
+    }
+
+    pub async fn unset_cb_auth_code(&self) {
+        let mut auth_info = self.auth_info.write().await;
+        auth_info.cb_auth_code = None;
     }
 
     pub async fn execute_backoff(&mut self) -> Result<(), ApiError> {
@@ -66,10 +93,12 @@ impl ApiManager {
             // send sample API call
             let url = format!("{}/markets", self.base_url);
 
+            let auth_info = self.auth_info.read().await;
+
             let request = self
                 .client
                 .get(&url)
-                .bearer_auth(&self.access_token.clone().unwrap().0);
+                .bearer_auth(&auth_info.access_token.clone().unwrap().0);
 
             let response = match request.send().await {
                 Ok(res) => res,
@@ -129,8 +158,8 @@ impl ApiManager {
         // request parameters
         let params = vec![
             ("response_type", "code"),
-            ("client_id", &self.client_id),
-            ("redirect_uri", &self.callback_uri),
+            ("client_id", &self.application_id),
+            ("redirect_uri", &self.callback_url),
             ("scope", &self.scope),
             ("code_challenge", &challenge),
             ("code_challenge_method", "S256"),
@@ -140,6 +169,8 @@ impl ApiManager {
             Ok(parsed_url) => Into::<String>::into(parsed_url),
             Err(_) => return Err(ApiError::RequestError),
         };
+
+        println!("URL DDDDD: {}", url);
 
         // Start callback server before opening the browser
         // let server_task = tokio::spawn(start_callback_server(8081));
@@ -156,11 +187,15 @@ impl ApiManager {
         //     Err(_) => Err(ApiError::InternalServerError),
         // };
 
-        let code = {
+        let code: String = {
             self.cb_auth_notifier.notified().await;
             println!("ApiManager pointer in receiver: {:p}", self);
-            println!("CCCCC: {:?}", self.cb_auth_code);
-            self.cb_auth_code
+
+            let mut auth_info = self.auth_info.write().await;
+
+            println!("CCCCC: {:?}", auth_info.cb_auth_code);
+            auth_info
+                .cb_auth_code
                 .take()
                 .ok_or(ApiError::InternalServerError)?
         };
@@ -171,9 +206,9 @@ impl ApiManager {
         let params = [
             ("grant_type", "authorization_code"),
             ("code", &code),
-            ("redirect_uri", &self.callback_uri),
+            ("redirect_uri", &self.callback_url),
             ("code_verifier", &state),
-            ("client_id", &self.client_id),
+            ("client_id", &self.application_id),
         ];
 
         // send request
@@ -187,7 +222,8 @@ impl ApiManager {
             Err(_) => return Err(ApiError::RequestError),
         };
 
-        self.cb_auth_code = None;
+        // shouldn't need to unset since we take() earlier
+        // self.unset_cb_auth_code().await;
 
         let status = response.status();
         println!("s {}", status);
@@ -221,8 +257,12 @@ impl ApiManager {
 
             let duration = SystemTime::now() + Duration::new(expires_in, 0);
 
-            self.access_token = Some((access_token, duration));
-            self.refresh_token = Some(refresh_token);
+            {
+                let mut auth_info = self.auth_info.write().await;
+
+                auth_info.access_token = Some((access_token, duration));
+                auth_info.refresh_token = Some(refresh_token);
+            }
 
             return Ok(status);
         }
@@ -231,8 +271,16 @@ impl ApiManager {
     }
 
     pub async fn validate_auth(&mut self) -> Result<StatusCode, ApiError> {
-        if self.access_token.is_none() || self.access_token.clone().unwrap().1 < SystemTime::now() {
-            if self.refresh_token.is_none() {
+        let (at, rt) = {
+            let auth_info = self.auth_info.read().await;
+            (
+                auth_info.access_token.clone(),
+                auth_info.refresh_token.clone(),
+            )
+        };
+
+        if at.is_none() || at.unwrap().1 < SystemTime::now() {
+            if rt.is_none() {
                 return self.auth().await;
             } else {
                 return self.reauth().await;
@@ -247,18 +295,20 @@ impl ApiManager {
         // self.execute_backoff().await?;
 
         // ensure refresh token is present
-        let refresh_token = match &self.refresh_token {
+        let refresh_token = {
+            let auth_info = self.auth_info.read().await;
+            auth_info.refresh_token.clone()
+        };
+        let refresh_token = match refresh_token {
             Some(token) => token,
-            None => {
-                return self.auth().await;
-            }
+            None => return self.auth().await,
         };
 
         // request parameters
         let params = [
             ("grant_type", "refresh_token"),
-            ("refresh_token", refresh_token),
-            ("client_id", &self.client_id),
+            ("refresh_token", &refresh_token),
+            ("client_id", &self.application_id),
         ];
 
         // send request
@@ -299,11 +349,16 @@ impl ApiManager {
 
             let duration = SystemTime::now() + Duration::new(expires_in, 0);
 
-            self.access_token = Some((access_token, duration));
+            {
+                let mut auth_info = self.auth_info.write().await;
 
-            // update refresh token if new one is provided
-            if let Some(refresh_token) = json["refresh_token"].as_str() {
-                self.refresh_token = Some(refresh_token.to_string());
+                auth_info.access_token = Some((access_token, duration));
+                auth_info.refresh_token = Some(refresh_token);
+
+                // update refresh token if new one is provided
+                if let Some(refresh_token) = json["refresh_token"].as_str() {
+                    auth_info.refresh_token = Some(refresh_token.to_string());
+                }
             }
 
             return Ok(status);
@@ -330,16 +385,15 @@ impl ApiManager {
         // construct and send request
         let url = format!("{}/{}", self.base_url, endpoint);
 
+        let access_token = {
+            let auth_info = self.auth_info.read().await;
+            auth_info.access_token.clone()
+        };
+
         let request = self
             .client
             .get(&url)
-            .bearer_auth(
-                &self
-                    .access_token
-                    .clone()
-                    .ok_or_else(|| ApiError::NoAccessToken)?
-                    .0,
-            )
+            .bearer_auth(access_token.ok_or_else(|| ApiError::NoAccessToken)?.0)
             .query(&params.unwrap_or_default());
 
         let response = match request.send().await {
@@ -365,7 +419,10 @@ impl ApiManager {
             204 => Ok((status, serde_json::json!({}))),
             401 => {
                 // refresh access token if needed
-                self.access_token = None;
+                {
+                    let mut auth_info = self.auth_info.write().await;
+                    auth_info.access_token = None;
+                }
                 self.validate_auth().await?;
                 return Err(ApiError::InvalidAccessToken);
             }
@@ -393,16 +450,15 @@ impl ApiManager {
         // construct and send request
         let url = format!("{}/{}", self.base_url, endpoint);
 
+        let access_token = {
+            let auth_info = self.auth_info.read().await;
+            auth_info.access_token.clone()
+        };
+
         let request = self
             .client
             .post(&url)
-            .bearer_auth(
-                &self
-                    .access_token
-                    .clone()
-                    .ok_or_else(|| ApiError::NoAccessToken)?
-                    .0,
-            )
+            .bearer_auth(access_token.ok_or_else(|| ApiError::NoAccessToken)?.0)
             .json(&body.unwrap_or_default());
 
         let response = match request.send().await {
@@ -426,7 +482,10 @@ impl ApiManager {
             204 => Ok((status, serde_json::json!({}))),
             401 => {
                 // refresh access token if needed
-                self.access_token = None;
+                {
+                    let mut auth_info = self.auth_info.write().await;
+                    auth_info.access_token = None;
+                }
                 self.validate_auth().await?;
                 return Err(ApiError::InvalidAccessToken);
             }
@@ -454,16 +513,15 @@ impl ApiManager {
         // construct and send request
         let url = format!("{}/{}", self.base_url, endpoint);
 
+        let access_token = {
+            let auth_info = self.auth_info.read().await;
+            auth_info.access_token.clone()
+        };
+
         let request = self
             .client
             .put(&url)
-            .bearer_auth(
-                &self
-                    .access_token
-                    .clone()
-                    .ok_or_else(|| ApiError::NoAccessToken)?
-                    .0,
-            )
+            .bearer_auth(access_token.ok_or_else(|| ApiError::NoAccessToken)?.0)
             .json(&body.unwrap_or_default());
 
         let response = match request.send().await {
@@ -487,7 +545,10 @@ impl ApiManager {
             204 => Ok((status, serde_json::json!({}))),
             401 => {
                 // refresh access token if needed
-                self.access_token = None;
+                {
+                    let mut auth_info = self.auth_info.write().await;
+                    auth_info.access_token = None;
+                }
                 self.validate_auth().await?;
                 return Err(ApiError::InvalidAccessToken);
             }

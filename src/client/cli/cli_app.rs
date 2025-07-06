@@ -1,5 +1,5 @@
 use crate::client::core::playback_manager::PlaybackManager;
-use crate::client::local_api_manager::ApiManager;
+use crate::client::local_api_manager::ApiProxy;
 // use crate::core::playlist_manager::PlaylistManager;
 // use crate::core::queue_manager::QueueManager;
 // use crate::core::search_manager::SearchManager;
@@ -82,7 +82,7 @@ pub enum Commands {
     },
 }
 
-pub async fn run_cli(api_manager: &mut ApiManager) {
+pub async fn run_cli(api_manager: &mut ApiProxy) {
     let cli = Cli::parse();
 
     let mut playback_manager = PlaybackManager::new(api_manager);
