@@ -101,11 +101,13 @@ impl ApiProxy {
         let response = self.client.get(&url).send().await;
 
         if response.is_ok() && response.unwrap().status().as_u16() == 200 {
+            println!("Server is already up and running.");
             return Ok(());
         } else {
             if retry >= self.max_server_retries {
                 return Err(ApiError::InternalServerError);
             }
+            println!("Server is down, attempting to start it...");
             let _ = start_server(self.server_port, self.server_timeout).await;
             // self.check_server(retry + 1).await?;
             return Ok(());
@@ -122,8 +124,17 @@ impl ApiProxy {
         // check if server is up, if not, start it
         // self.check_server(0).await?;
 
+        if self.client_id.is_none() {
+            return Err(ApiError::InvalidAccessToken);
+        }
+
         // construct and send request
-        let url = format!("{}/{}", self.base_url, endpoint);
+        let url = format!(
+            "{}/{}?client_id={}",
+            self.base_url,
+            endpoint,
+            self.client_id.unwrap()
+        );
 
         println!("URL: {}", url);
 
@@ -161,8 +172,17 @@ impl ApiProxy {
         // check if server is up, if not, start it
         // self.check_server(0).await?;
 
+        if self.client_id.is_none() {
+            return Err(ApiError::InvalidAccessToken);
+        }
+
         // construct and send request
-        let url = format!("{}/{}", self.base_url, endpoint);
+        let url = format!(
+            "{}/{}?client_id={}",
+            self.base_url,
+            endpoint,
+            self.client_id.unwrap()
+        );
 
         let request = self.client.post(&url).json(&body.unwrap_or_default());
 
@@ -198,8 +218,17 @@ impl ApiProxy {
         // check if server is up, if not, start it
         // self.check_server(0).await?;
 
+        if self.client_id.is_none() {
+            return Err(ApiError::InvalidAccessToken);
+        }
+
         // construct and send request
-        let url = format!("{}/{}", self.base_url, endpoint);
+        let url = format!(
+            "{}/{}?client_id={}",
+            self.base_url,
+            endpoint,
+            self.client_id.unwrap()
+        );
 
         let request = self.client.put(&url).json(&body.unwrap_or_default());
 

@@ -136,6 +136,7 @@ pub async fn run_cli(api_manager: &mut ApiProxy) {
         }
         Commands::Now => {
             output = Some(playback_manager.now().await);
+            output = Some(output.unwrap() + &playback_manager.now().await);
         }
 
         // Playlist Management

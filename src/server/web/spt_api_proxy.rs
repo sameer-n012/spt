@@ -158,6 +158,8 @@ impl ApiProxy {
         let state = self.gen_random_state(64);
         let challenge = self.gen_challenge(&state);
 
+        let sent_state = self.user_client_id.to_string();
+
         // request parameters
         let params = vec![
             ("response_type", "code"),
@@ -166,6 +168,7 @@ impl ApiProxy {
             ("scope", &self.scope),
             ("code_challenge", &challenge),
             ("code_challenge_method", "S256"),
+            ("state", &sent_state),
         ];
 
         let url = match Url::parse_with_params("https://accounts.spotify.com/authorize", &params) {

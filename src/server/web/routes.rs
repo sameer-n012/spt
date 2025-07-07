@@ -77,6 +77,7 @@ pub fn routes(
         .and(warp::path::end())
         .and(warp::query::<std::collections::HashMap<String, String>>())
         .and_then({
+            println!("FFFFF: api/spt-fwd/me/player/currently-playing route");
             println!("here -1");
 
             let last_request_time = Arc::clone(&last_request_time);
@@ -92,7 +93,13 @@ pub fn routes(
                     println!("api_manager pointer in now route {:p}", &api_proxies);
 
                     let client_id = query.get("client_id").and_then(|s| s.parse::<u64>().ok());
-                    let client_id = Some(1);
+                    if client_id.is_none() {
+                        return Ok::<_, warp::Rejection>(warp::reply::with_status(
+                            warp::reply::json(&serde_json::json!({})), // TODO figure out how to make just warp::reply()
+                            warp::http::StatusCode::FORBIDDEN,
+                        ));
+                    }
+
                     let proxy = if let Some(id) = client_id {
                         let proxies = api_proxies.read().await;
                         proxies.get(&id).map(|p| Arc::clone(p))
@@ -127,6 +134,7 @@ pub fn routes(
         });
 
     let ping_route = warp::path("ping").and(warp::path::end()).and_then({
+        println!("FFFFF: /ping route");
         let last_request_time = Arc::clone(&last_request_time);
         move || {
             let last_request_time = Arc::clone(&last_request_time);
@@ -139,6 +147,7 @@ pub fn routes(
     });
 
     let init_route = warp::path("init").and(warp::path::end()).and_then({
+        println!("FFFFF: /init route");
         let last_request_time = Arc::clone(&last_request_time);
         let api_proxies = Arc::clone(&api_proxies);
         let next_client_id = Arc::clone(&next_client_id);
@@ -177,6 +186,7 @@ pub fn routes(
         .and(warp::path::end())
         .and(warp::query::<std::collections::HashMap<String, String>>())
         .and_then({
+            println!("FFFFF: /auth/cb route");
             let api_proxies = Arc::clone(&api_proxies);
             let last_request_time = Arc::clone(&last_request_time);
 
@@ -195,11 +205,16 @@ pub fn routes(
                     // TODO get sent state which contains client_id and access
                     // the corresponding ApiProxy in the hash map
                     // then set the ApiProxy's cb_auth_code and notify
-                    // temporarily get client_id=1:
-                    let client_id = 1;
+                    let client_id = query.get("state").and_then(|s| s.parse::<u64>().ok());
+                    if client_id.is_none() {
+                        return Ok::<_, warp::Rejection>(warp::reply::html(
+                            "Sorry, something went wrong.",
+                        ));
+                    }
+
                     let proxy = {
                         let api_proxies = api_proxies.read().await;
-                        if let Some(p) = api_proxies.get(&client_id) {
+                        if let Some(p) = api_proxies.get(&client_id.unwrap()) {
                             Arc::clone(p)
                         } else {
                             return Ok::<_, warp::Rejection>(warp::reply::html(
