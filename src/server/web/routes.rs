@@ -1,101 +1,49 @@
+use reqwest::StatusCode;
 use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Instant;
 use tokio::sync::{Mutex, RwLock};
-use warp::{Filter, Rejection, Reply};
+use warp::{any, Filter, Rejection, Reply};
 
 use crate::server::web::spt_api_proxy::ApiProxy;
 use crate::util::errors::return_response_code;
 
-// fn construct_json_fwd_route(
-//     route: &str,
-//     server_meta: Arc<Mutex<ServerMeta>>,
-//     last_request_time: Arc<Mutex<Instant>>,
-// ) -> impl Filter<Extract = impl Reply, Error = Rejection> + Clone {
-//     let rt = route
-//         .clone()
-//         .split("/")
-//         .map(|x| warp::path(x))
-//         .fold(warp::path("api").and("spt-fwd"), |acc, x| acc.and(x))
-//         .and(warp::path::end());
-
-//     let route = rt.and_then({
-//         let last_request_time = Arc::clone(&last_request_time);
-//         let api_manager = {
-//             let m = server_meta.lock().unwrap();
-//             m.api_manager.clone()
-//         };
-
-//         move || {
-//             let last_request_time = Arc::clone(&last_request_time);
-//             let mut api_manager = api_manager.clone();
-
-//             async move {
-//                 update_last_request_time(&last_request_time);
-//                 let res = api_manager.get(route, None).await;
-
-//                 match res {
-//                     Ok((status, json)) => Ok::<_, warp::Rejection>(warp::reply::json(&json)),
-//                     Err(err) => Ok::<_, warp::Rejection>(warp::reply::json(&serde_json::json!({
-//                         "error": format!("Error: {}", err)
-//                     }))),
-//                 }
-//             }
-//         }
-//     });
-
-//     return route;
-// }
-
-pub fn routes(
+fn construct_json_fwd_get_route(
+    full_route: &str,
     api_proxies: Arc<RwLock<HashMap<u64, Arc<ApiProxy>>>>,
-    next_client_id: Arc<Mutex<u64>>,
     last_request_time: Arc<Mutex<Instant>>,
-) -> impl Filter<Extract = impl Reply, Error = Rejection> + Clone {
-    // Define the routes
-    //
-    // let get_routes = vec!["me/player/currently-playing"];
-    // let get_routes = get_routes
-    //     .iter()
-    //     .map(|x| {
-    //         construct_json_fwd_route(x, Arc::clone(&server_meta), Arc::clone(&last_request_time))
-    //     })
-    //     .reduce(|acc, x| acc.or(x));
-    //
-    // let now_route = construct_json_fwd_route(
-    //     "me/player/currently-playing",
-    //     Arc::clone(&server_meta),
-    //     Arc::clone(&last_request_time),
-    // );
+) -> impl Filter<Extract = (warp::reply::WithStatus<warp::reply::Json>,), Error = Rejection> + Clone
+{
+    let full_route = full_route.to_string();
+    let path_parts: Vec<_> = full_route.split('/').map(String::from).collect();
+    let mut route = warp::any().boxed();
+    for part in path_parts.iter() {
+        route = route.and(warp::path(part.clone())).boxed();
+    }
 
-    let now_route = warp::path("api")
-        .and(warp::path("spt-fwd"))
-        .and(warp::path("me"))
-        .and(warp::path("player"))
-        .and(warp::path("currently-playing"))
+    // test
+    // let a = any().and(warp::path("hi")).and(warp::path("there"));
+
+    route
         .and(warp::path::end())
         .and(warp::query::<std::collections::HashMap<String, String>>())
         .and_then({
-            println!("FFFFF: api/spt-fwd/me/player/currently-playing route");
-            println!("here -1");
-
-            let last_request_time = Arc::clone(&last_request_time);
-            let api_proxies = Arc::clone(&api_proxies);
+            let full_route = full_route.clone();
 
             move |query: std::collections::HashMap<String, String>| {
                 let last_request_time = Arc::clone(&last_request_time);
                 let api_proxies = Arc::clone(&api_proxies);
 
+                let full_route = full_route.clone();
+
                 async move {
                     update_last_request_time(&last_request_time).await;
-
-                    println!("api_manager pointer in now route {:p}", &api_proxies);
 
                     let client_id = query.get("client_id").and_then(|s| s.parse::<u64>().ok());
                     if client_id.is_none() {
                         return Ok::<_, warp::Rejection>(warp::reply::with_status(
-                            warp::reply::json(&serde_json::json!({})), // TODO figure out how to make just warp::reply()
+                            warp::reply::json(&serde_json::json!({})),
                             warp::http::StatusCode::FORBIDDEN,
                         ));
                     }
@@ -108,14 +56,14 @@ pub fn routes(
                     };
                     if proxy.is_none() {
                         return Ok::<_, warp::Rejection>(warp::reply::with_status(
-                            warp::reply::json(&serde_json::json!({})), // TODO figure out how to make just warp::reply()
+                            warp::reply::json(&serde_json::json!({})),
                             warp::http::StatusCode::FORBIDDEN,
                         ));
                     }
 
                     let proxy = proxy.unwrap();
-
-                    let res = proxy.get("me/player/currently-playing", None).await;
+                    let shortened_route = &full_route["api/spt-fwd/".len()..];
+                    let res = proxy.get(shortened_route, None).await;
 
                     match res {
                         Ok((status, json)) => Ok::<_, warp::Rejection>(warp::reply::with_status(
@@ -131,7 +79,99 @@ pub fn routes(
                     }
                 }
             }
-        });
+        })
+}
+
+pub fn routes(
+    api_proxies: Arc<RwLock<HashMap<u64, Arc<ApiProxy>>>>,
+    next_client_id: Arc<Mutex<u64>>,
+    last_request_time: Arc<Mutex<Instant>>,
+) -> impl Filter<Extract = impl Reply, Error = Rejection> + Clone {
+    // Define the routes
+
+    let json_fwd_get_routes = vec!["api/spt-fwd/me/player/currently-playing"];
+
+    let initial_route = construct_json_fwd_get_route(
+        json_fwd_get_routes[0],
+        Arc::clone(&api_proxies),
+        Arc::clone(&last_request_time),
+    )
+    .boxed();
+    let api_routes = json_fwd_get_routes
+        .iter()
+        .skip(1)
+        .map(|route| {
+            construct_json_fwd_get_route(
+                route,
+                Arc::clone(&api_proxies),
+                Arc::clone(&last_request_time),
+            )
+        })
+        .fold(initial_route, |acc, route| acc.or(route).unify().boxed());
+
+    // let now_route = warp::path("api")
+    //     .and(warp::path("spt-fwd"))
+    //     .and(warp::path("me"))
+    //     .and(warp::path("player"))
+    //     .and(warp::path("currently-playing"))
+    //     .and(warp::path::end())
+    //     .and(warp::query::<std::collections::HashMap<String, String>>())
+    //     .and_then({
+    //         println!("FFFFF: api/spt-fwd/me/player/currently-playing route");
+    //         println!("here -1");
+
+    //         let last_request_time = Arc::clone(&last_request_time);
+    //         let api_proxies = Arc::clone(&api_proxies);
+
+    //         move |query: std::collections::HashMap<String, String>| {
+    //             let last_request_time = Arc::clone(&last_request_time);
+    //             let api_proxies = Arc::clone(&api_proxies);
+
+    //             async move {
+    //                 update_last_request_time(&last_request_time).await;
+
+    //                 println!("api_manager pointer in now route {:p}", &api_proxies);
+
+    //                 let client_id = query.get("client_id").and_then(|s| s.parse::<u64>().ok());
+    //                 if client_id.is_none() {
+    //                     return Ok::<_, warp::Rejection>(warp::reply::with_status(
+    //                         warp::reply::json(&serde_json::json!({})), // TODO figure out how to make just warp::reply()
+    //                         warp::http::StatusCode::FORBIDDEN,
+    //                     ));
+    //                 }
+
+    //                 let proxy = if let Some(id) = client_id {
+    //                     let proxies = api_proxies.read().await;
+    //                     proxies.get(&id).map(|p| Arc::clone(p))
+    //                 } else {
+    //                     None
+    //                 };
+    //                 if proxy.is_none() {
+    //                     return Ok::<_, warp::Rejection>(warp::reply::with_status(
+    //                         warp::reply::json(&serde_json::json!({})), // TODO figure out how to make just warp::reply()
+    //                         warp::http::StatusCode::FORBIDDEN,
+    //                     ));
+    //                 }
+
+    //                 let proxy = proxy.unwrap();
+
+    //                 let res = proxy.get("me/player/currently-playing", None).await;
+
+    //                 match res {
+    //                     Ok((status, json)) => Ok::<_, warp::Rejection>(warp::reply::with_status(
+    //                         warp::reply::json(&json),
+    //                         status,
+    //                     )),
+    //                     Err(err) => Ok::<_, warp::Rejection>(warp::reply::with_status(
+    //                         warp::reply::json(&serde_json::json!({
+    //                             "error": format!("Error: {}", err)
+    //                         })),
+    //                         return_response_code(err),
+    //                     )),
+    //                 }
+    //             }
+    //         }
+    //     });
 
     let ping_route = warp::path("ping").and(warp::path::end()).and_then({
         println!("FFFFF: /ping route");
@@ -146,6 +186,18 @@ pub fn routes(
         }
     });
 
+    let root_route = warp::path::end().and_then({
+        println!("FFFFF: / route");
+        let last_request_time = Arc::clone(&last_request_time);
+        move || {
+            let last_request_time = Arc::clone(&last_request_time);
+            async move {
+                update_last_request_time(&last_request_time).await;
+                return Ok::<_, warp::Rejection>(warp::reply::html("SPT Server is running!"));
+            }
+        }
+    });
+
     let init_route = warp::path("init").and(warp::path::end()).and_then({
         println!("FFFFF: /init route");
         let last_request_time = Arc::clone(&last_request_time);
@@ -153,11 +205,13 @@ pub fn routes(
         let next_client_id = Arc::clone(&next_client_id);
 
         move || {
+            println!("FFFFF: /init route 2");
             let last_request_time = Arc::clone(&last_request_time);
             let api_proxies = Arc::clone(&api_proxies);
             let next_client_id = Arc::clone(&next_client_id);
 
             async move {
+                println!("FFFFF: /init route 3");
                 update_last_request_time(&last_request_time).await;
 
                 let mut next_client_id_g = next_client_id.lock().await;
@@ -168,6 +222,7 @@ pub fn routes(
                 {
                     let mut api_proxies = api_proxies.write().await;
                     api_proxies.insert(client_id_val, Arc::new(ApiProxy::new(client_id_val)));
+                    println!("FFFFF: /init route 4");
 
                     println!("Printing the HashMap:");
                     for (key, value) in &*api_proxies {
@@ -264,7 +319,12 @@ pub fn routes(
             }
         });
 
-    return now_route.or(ping_route).or(init_route).or(auth_cb_route);
+    return api_routes
+        // .or(now_route)
+        .or(ping_route)
+        .or(init_route)
+        .or(auth_cb_route)
+        .or(root_route);
 }
 
 async fn update_last_request_time(last_request_time: &Arc<Mutex<Instant>>) {
