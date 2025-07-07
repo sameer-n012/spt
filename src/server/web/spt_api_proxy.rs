@@ -31,7 +31,7 @@ pub struct ApiProxy {
 
     base_url: String,
     callback_url: String,
-    backoff: SystemTime, // time to start api calls again
+    backoff: RwLock<SystemTime>, // time to start api calls again
 
     user_client_id: u64, // unique client id for each user, each user gets their own ApiProxy
     auth_info: RwLock<AuthInfo>,
@@ -57,7 +57,7 @@ impl ApiProxy {
 
             base_url,
             callback_url,
-            backoff: SystemTime::now(),
+            backoff: RwLock::new(SystemTime::now()),
 
             user_client_id,
             auth_info: RwLock::new(AuthInfo {
@@ -80,10 +80,13 @@ impl ApiProxy {
         auth_info.cb_auth_code = None;
     }
 
-    pub async fn execute_backoff(&mut self) -> Result<(), ApiError> {
+    pub async fn execute_backoff(&self) -> Result<(), ApiError> {
         loop {
+            // get backoff lock here
+            let mut backoff = self.backoff.write().await;
+
             // backoff if necessary
-            match self.backoff.duration_since(SystemTime::now()) {
+            match backoff.duration_since(SystemTime::now()) {
                 Ok(duration) => {
                     tokio::time::sleep(tokio::time::Duration::from_secs(duration.as_secs())).await;
                 }
@@ -115,9 +118,9 @@ impl ApiProxy {
                         .and_then(|header| header.to_str().ok())
                         .and_then(|value| value.parse::<u64>().ok())
                     {
-                        self.backoff = SystemTime::now() + Duration::from_secs(retry_after);
+                        *backoff = SystemTime::now() + Duration::from_secs(retry_after);
                     } else {
-                        self.backoff = SystemTime::now() + Duration::from_secs(5);
+                        *backoff = SystemTime::now() + Duration::from_secs(5);
                         // default backoff
                     }
                     continue; // Retry after the backoff
@@ -148,7 +151,7 @@ impl ApiProxy {
         return general_purpose::URL_SAFE_NO_PAD.encode(sha.finalize());
     }
 
-    async fn auth(&mut self) -> Result<StatusCode, ApiError> {
+    async fn auth(&self) -> Result<StatusCode, ApiError> {
         // self.execute_backoff().await?;
 
         // generate state and challenge
@@ -270,7 +273,7 @@ impl ApiProxy {
         Err(errors::return_response_error(status))
     }
 
-    pub async fn validate_auth(&mut self) -> Result<StatusCode, ApiError> {
+    pub async fn validate_auth(&self) -> Result<StatusCode, ApiError> {
         let (at, rt) = {
             let auth_info = self.auth_info.read().await;
             (
@@ -291,7 +294,7 @@ impl ApiProxy {
     }
 
     // Method for refreshing the Spotify API token
-    pub async fn reauth(&mut self) -> Result<StatusCode, ApiError> {
+    pub async fn reauth(&self) -> Result<StatusCode, ApiError> {
         // self.execute_backoff().await?;
 
         // ensure refresh token is present
@@ -370,7 +373,7 @@ impl ApiProxy {
 
     // Method for sending GET requests to the Spotify API
     pub async fn get(
-        &mut self,
+        &self,
         endpoint: &str,
         params: Option<HashMap<&str, &str>>,
     ) -> Result<(StatusCode, Value), ApiError> {
@@ -428,7 +431,10 @@ impl ApiProxy {
             }
             429 => {
                 // backoff if rate limited
-                self.backoff = SystemTime::now() + Duration::from_secs(5);
+                {
+                    let mut backoff = self.backoff.write().await;
+                    *backoff = SystemTime::now() + Duration::from_secs(5);
+                }
                 return Err(ApiError::ResponseError429);
             }
             _ => Err(errors::return_response_error(status)),
@@ -437,7 +443,7 @@ impl ApiProxy {
 
     // Method for sending POST requests to the Spotify API
     pub async fn post(
-        &mut self,
+        &self,
         endpoint: &str,
         body: Option<Value>,
     ) -> Result<(StatusCode, Value), ApiError> {
@@ -491,7 +497,10 @@ impl ApiProxy {
             }
             429 => {
                 // backoff if rate limited
-                self.backoff = SystemTime::now() + Duration::from_secs(5);
+                {
+                    let mut backoff = self.backoff.write().await;
+                    *backoff = SystemTime::now() + Duration::from_secs(5);
+                }
                 return Err(ApiError::ResponseError429);
             }
             _ => Err(errors::return_response_error(status)),
@@ -500,7 +509,7 @@ impl ApiProxy {
 
     // Method for sending PUT requests to the Spotify API
     pub async fn put(
-        &mut self,
+        &self,
         endpoint: &str,
         body: Option<Value>,
     ) -> Result<(StatusCode, Value), ApiError> {
@@ -554,7 +563,10 @@ impl ApiProxy {
             }
             429 => {
                 // backoff if rate limited
-                self.backoff = SystemTime::now() + Duration::from_secs(5);
+                {
+                    let mut backoff = self.backoff.write().await;
+                    *backoff = SystemTime::now() + Duration::from_secs(5);
+                }
                 return Err(ApiError::ResponseError429);
             }
             _ => Err(errors::return_response_error(status)),

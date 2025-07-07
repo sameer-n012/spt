@@ -2,7 +2,7 @@ use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Instant;
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, RwLock};
 use warp::{Filter, Rejection, Reply};
 
 use crate::server::web::spt_api_proxy::ApiProxy;
@@ -49,7 +49,7 @@ use crate::util::errors::return_response_code;
 // }
 
 pub fn routes(
-    api_proxies: Arc<HashMap<u64, Arc<ApiProxy>>>,
+    api_proxies: Arc<RwLock<HashMap<u64, Arc<ApiProxy>>>>,
     next_client_id: Arc<Mutex<u64>>,
     last_request_time: Arc<Mutex<Instant>>,
 ) -> impl Filter<Extract = impl Reply, Error = Rejection> + Clone {
@@ -91,13 +91,17 @@ pub fn routes(
 
                     println!("api_manager pointer in now route {:p}", &api_proxies);
 
-                    let proxy = query
-                        .get("client_id")
-                        .and_then(|s| s.parse::<u64>().ok())
-                        .and_then(|id| api_proxies.get(&id));
+                    let client_id = query.get("client_id").and_then(|s| s.parse::<u64>().ok());
+                    let client_id = Some(1);
+                    let proxy = if let Some(id) = client_id {
+                        let proxies = api_proxies.read().await;
+                        proxies.get(&id).map(|p| Arc::clone(p))
+                    } else {
+                        None
+                    };
                     if proxy.is_none() {
                         return Ok::<_, warp::Rejection>(warp::reply::with_status(
-                            warp::reply(),
+                            warp::reply::json(&serde_json::json!({})), // TODO figure out how to make just warp::reply()
                             warp::http::StatusCode::FORBIDDEN,
                         ));
                     }
@@ -136,20 +140,31 @@ pub fn routes(
 
     let init_route = warp::path("init").and(warp::path::end()).and_then({
         let last_request_time = Arc::clone(&last_request_time);
-        let api_managers = Arc::clone(&api_proxies);
+        let api_proxies = Arc::clone(&api_proxies);
+        let next_client_id = Arc::clone(&next_client_id);
+
         move || {
             let last_request_time = Arc::clone(&last_request_time);
-            let api_managers = Arc::clone(&api_managers);
+            let api_proxies = Arc::clone(&api_proxies);
+            let next_client_id = Arc::clone(&next_client_id);
 
             async move {
                 update_last_request_time(&last_request_time).await;
 
-                let next_client_id_g = next_client_id.lock().await;
+                let mut next_client_id_g = next_client_id.lock().await;
 
                 let client_id_val = *next_client_id_g;
                 *next_client_id_g += 1;
 
-                api_managers.insert(client_id_val, Arc::new(ApiProxy::new(client_id_val)));
+                {
+                    let mut api_proxies = api_proxies.write().await;
+                    api_proxies.insert(client_id_val, Arc::new(ApiProxy::new(client_id_val)));
+
+                    println!("Printing the HashMap:");
+                    for (key, value) in &*api_proxies {
+                        println!("{}: {:p}", key, &value);
+                    }
+                }
 
                 let v: Value = serde_json::json!({"client_id": client_id_val});
                 return Ok::<_, warp::Rejection>(warp::reply::json(&v));
@@ -182,11 +197,24 @@ pub fn routes(
                     // then set the ApiProxy's cb_auth_code and notify
                     // temporarily get client_id=1:
                     let client_id = 1;
-                    if let Some(proxy) = api_proxies.get(&client_id) {
-                        if let Some(code) = query.get("code") {
-                            println!("Received auth code: {:?}", code);
-                            proxy.set_cb_auth_code(code.to_owned()).await;
+                    let proxy = {
+                        let api_proxies = api_proxies.read().await;
+                        if let Some(p) = api_proxies.get(&client_id) {
+                            Arc::clone(p)
+                        } else {
+                            return Ok::<_, warp::Rejection>(warp::reply::html(
+                                "Sorry, something went wrong.",
+                            ));
                         }
+                    };
+
+                    if let Some(code) = query.get("code") {
+                        println!("Received auth code: {:?}", code);
+                        proxy.set_cb_auth_code(code.to_owned()).await;
+                    } else {
+                        return Ok::<_, warp::Rejection>(warp::reply::html(
+                            "Sorry, something went wrong.",
+                        ));
                     }
 
                     // OLD

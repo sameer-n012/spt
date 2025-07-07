@@ -17,7 +17,7 @@ pub struct ServerMeta {
     pub inactivity_timeout: Duration,
     pub db_url: String,
     pub db_port: u16,
-    pub api_proxies: Arc<HashMap<u64, Arc<ApiProxy>>>,
+    pub api_proxies: Arc<RwLock<HashMap<u64, Arc<ApiProxy>>>>,
     pub next_client_id: Arc<Mutex<u64>>,
     pub last_request_time: Arc<Mutex<Instant>>,
 }
@@ -40,7 +40,7 @@ pub async fn start_server(
             .expect("DB_PORT must be set")
             .parse::<u16>()
             .unwrap(),
-        api_proxies: Arc::new(HashMap::new()),
+        api_proxies: Arc::new(RwLock::new(HashMap::new())),
         next_client_id: Arc::new(Mutex::new(1)),
         last_request_time: last_request_time,
     };
