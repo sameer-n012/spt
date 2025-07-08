@@ -1,4 +1,7 @@
+use chrono::{Date, Local};
 use dotenvy::dotenv;
+use fern::Dispatch;
+use log::{debug, error, info, warn, LevelFilter};
 use tokio;
 
 mod server {
@@ -15,7 +18,7 @@ mod util {
 }
 
 mod client {
-    pub mod local_api_manager;
+    pub mod local_api_proxy;
     pub mod cli {
         pub mod cli_app;
     }
@@ -31,26 +34,43 @@ mod client {
 
 #[tokio::main]
 async fn main() {
-    // Initialize the API manager with the token
-    // Example call to get devices
-    // match api_manager.get_devices().await {
-    //     Ok((status, json)) => {
-    //         println!("Status: {:?}", status);
-    //         println!("Response JSON: {:?}", json);
-    //     }
-    //     Err(e) => {
-    //         eprintln!("Error occurred: {:?}", e);
-    //     }
-    // }
-    //
-
+    // load environment variables from .env file
     dotenv().ok();
 
-    let mut api_manager = client::local_api_manager::ApiProxy::new();
-    if let Err(e) = api_manager.setup().await {
-        eprintln!("Error setting up API manager: {:?}", e);
+    // initialize logging
+    let log_file_name = format!(
+        "logs/spt_server_{}.log",
+        Local::now().format("%Y%m%d-%H%M%S")
+    );
+    let logger = Dispatch::new()
+        .format(|out, message, record| {
+            out.finish(format_args!(
+                "{} [{}] {}: {}",
+                Local::now().format("%Y-%m-%d %H:%M:%S%.6f"),
+                record.level(),
+                record.target(),
+                message
+            ))
+        })
+        .level(LevelFilter::Warn)
+        .level_for("spt", LevelFilter::Debug)
+        .chain(std::io::stdout())
+        .chain(fern::log_file(log_file_name).unwrap())
+        .apply();
+
+    if logger.is_err() {
+        eprintln!("Failed to initialize logger: {:?}", logger.err());
+    }
+
+    info!("Starting program.");
+
+    let mut api_proxy = client::local_api_proxy::ApiProxy::new();
+    if let Err(e) = api_proxy.setup().await {
+        error!("Failed to set up API proxy: {}", e);
         return;
     }
 
-    client::cli::cli_app::run_cli(&mut api_manager).await;
+    client::cli::cli_app::run_cli(&mut api_proxy).await;
+
+    info!("Stopping program.");
 }

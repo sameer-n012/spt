@@ -1,5 +1,5 @@
 use crate::client::core::playback_manager::PlaybackManager;
-use crate::client::local_api_manager::ApiProxy;
+use crate::client::local_api_proxy::ApiProxy;
 // use crate::core::playlist_manager::PlaylistManager;
 // use crate::core::queue_manager::QueueManager;
 // use crate::core::search_manager::SearchManager;
@@ -75,10 +75,10 @@ pub enum Commands {
     Clear, // clears the current queue
 }
 
-pub async fn run_cli(api_manager: &mut ApiProxy) {
+pub async fn run_cli(api_proxy: &mut ApiProxy) {
     let cli = Cli::parse();
 
-    let mut playback_manager = PlaybackManager::new(api_manager);
+    let mut playback_manager = PlaybackManager::new(api_proxy);
     // let mut queue_manager = QueueManager::new();
     // let mut status_manager = StatusManager::new();
     // let mut search_manager = SearchManager::new();

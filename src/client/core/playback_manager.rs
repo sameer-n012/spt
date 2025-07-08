@@ -1,4 +1,4 @@
-use crate::client::local_api_manager::ApiProxy;
+use crate::client::local_api_proxy::ApiProxy;
 use std::collections::HashMap;
 
 #[derive(Debug)]
@@ -25,7 +25,6 @@ impl<'a> PlaybackManager<'a> {
 
         if res.is_ok() {
             let (status, json) = res.unwrap();
-            println!("Status: {:?}", status);
             if status.as_u16() == 200 {
                 return format!(
                     "Now playing: {} - {} by {}",
@@ -109,8 +108,6 @@ impl<'a> PlaybackManager<'a> {
         if res.is_ok() {
             let (status, json) = res.unwrap();
             if status.as_u16() == 200 {
-                println!("{}", json);
-
                 self.device_list.clear(); // Clear previous device list
 
                 let mut devices_list = String::from("Available Devices:\n");

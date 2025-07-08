@@ -1,3 +1,4 @@
+use log::{debug, error, info, warn};
 use reqwest::StatusCode;
 use serde_json::Value;
 use std::collections::HashMap;
@@ -8,6 +9,14 @@ use warp::{any, Filter, Rejection, Reply};
 
 use crate::server::web::spt_api_proxy::ApiProxy;
 use crate::util::errors::return_response_code;
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+enum RouteType {
+    Get,
+    Post,
+    Put,
+    Delete,
+}
 
 fn construct_json_fwd_get_route(
     full_route: &str,
@@ -42,11 +51,18 @@ fn construct_json_fwd_get_route(
 
                     let client_id = query.get("client_id").and_then(|s| s.parse::<u64>().ok());
                     if client_id.is_none() {
+                        error!("Received call to route /{} without client_id.", full_route);
                         return Ok::<_, warp::Rejection>(warp::reply::with_status(
                             warp::reply::json(&serde_json::json!({})),
                             warp::http::StatusCode::FORBIDDEN,
                         ));
                     }
+
+                    info!(
+                        "Received call to route /{} from client_id {}.",
+                        full_route,
+                        client_id.clone().unwrap()
+                    );
 
                     let proxy = if let Some(id) = client_id {
                         let proxies = api_proxies.read().await;
@@ -55,33 +71,76 @@ fn construct_json_fwd_get_route(
                         None
                     };
                     if proxy.is_none() {
+                        error!(
+                            "No proxy found for client_id {}.",
+                            client_id.clone().unwrap()
+                        );
                         return Ok::<_, warp::Rejection>(warp::reply::with_status(
                             warp::reply::json(&serde_json::json!({})),
                             warp::http::StatusCode::FORBIDDEN,
                         ));
                     }
 
-                    println!("FFFFF: {} route", full_route);
-
                     let proxy = proxy.unwrap();
                     let shortened_route = &full_route["api/spt-fwd/".len()..];
                     let res = proxy.get(shortened_route, None).await;
 
                     match res {
-                        Ok((status, json)) => Ok::<_, warp::Rejection>(warp::reply::with_status(
-                            warp::reply::json(&json),
-                            status,
-                        )),
-                        Err(err) => Ok::<_, warp::Rejection>(warp::reply::with_status(
-                            warp::reply::json(&serde_json::json!({
-                                "error": format!("Error: {}", err)
-                            })),
-                            return_response_code(err),
-                        )),
+                        // Ok((status, json)) => Ok::<_, warp::Rejection>(warp::reply::with_status(
+                        //     warp::reply::json(&json),
+                        //     status,
+                        // )),
+                        Ok((status, json)) => {
+                            info!(
+                                "Forwarding request to route /{} with status {}.",
+                                full_route, status
+                            );
+                            Ok::<_, warp::Rejection>(warp::reply::with_status(
+                                warp::reply::json(&json),
+                                status,
+                            ))
+                        }
+                        // Err(err) => Ok::<_, warp::Rejection>(warp::reply::with_status(
+                        //     warp::reply::json(&serde_json::json!({
+                        //         "error": format!("Error: {}", err)
+                        //     })),
+                        //     return_response_code(err),
+                        // )),
+                        Err(err) => {
+                            warn!(
+                                "Forwarding request to route /{} with status {}.",
+                                full_route,
+                                return_response_code(err.clone())
+                            );
+                            Ok::<_, warp::Rejection>(warp::reply::with_status(
+                                warp::reply::json(&serde_json::json!({
+                                    "error": format!("Error: {}", err)
+                                })),
+                                return_response_code(err),
+                            ))
+                        }
                     }
                 }
             }
         })
+}
+
+fn construct_json_fwd_route(
+    route_type: RouteType,
+    full_route: &str,
+    api_proxies: Arc<RwLock<HashMap<u64, Arc<ApiProxy>>>>,
+    last_request_time: Arc<Mutex<Instant>>,
+) -> impl Filter<Extract = (warp::reply::WithStatus<warp::reply::Json>,), Error = Rejection> + Clone
+{
+    if route_type == RouteType::Get {
+        construct_json_fwd_get_route(full_route, api_proxies, last_request_time)
+    } else if route_type == RouteType::Put {
+        construct_json_fwd_get_route(full_route, api_proxies, last_request_time)
+    } else if route_type == RouteType::Post {
+        construct_json_fwd_get_route(full_route, api_proxies, last_request_time)
+    } else {
+        construct_json_fwd_get_route(full_route, api_proxies, last_request_time)
+    }
 }
 
 pub fn routes(
@@ -97,7 +156,8 @@ pub fn routes(
         "api/spt-fwd/me/player/devices",
     ];
 
-    let initial_route = construct_json_fwd_get_route(
+    let initial_route = construct_json_fwd_route(
+        RouteType::Get,
         json_fwd_get_routes[0],
         Arc::clone(&api_proxies),
         Arc::clone(&last_request_time),
@@ -107,7 +167,8 @@ pub fn routes(
         .iter()
         .skip(1)
         .map(|route| {
-            construct_json_fwd_get_route(
+            construct_json_fwd_route(
+                RouteType::Get,
                 route,
                 Arc::clone(&api_proxies),
                 Arc::clone(&last_request_time),
@@ -123,8 +184,6 @@ pub fn routes(
     //     .and(warp::path::end())
     //     .and(warp::query::<std::collections::HashMap<String, String>>())
     //     .and_then({
-    //         println!("FFFFF: api/spt-fwd/me/player/currently-playing route");
-    //         println!("here -1");
 
     //         let last_request_time = Arc::clone(&last_request_time);
     //         let api_proxies = Arc::clone(&api_proxies);
@@ -135,8 +194,6 @@ pub fn routes(
 
     //             async move {
     //                 update_last_request_time(&last_request_time).await;
-
-    //                 println!("api_manager pointer in now route {:p}", &api_proxies);
 
     //                 let client_id = query.get("client_id").and_then(|s| s.parse::<u64>().ok());
     //                 if client_id.is_none() {
@@ -180,10 +237,10 @@ pub fn routes(
     //     });
 
     let ping_route = warp::path("ping").and(warp::path::end()).and_then({
-        println!("FFFFF: /ping route");
         let last_request_time = Arc::clone(&last_request_time);
         move || {
             let last_request_time = Arc::clone(&last_request_time);
+            info!("Received call to route /ping.",);
             async move {
                 update_last_request_time(&last_request_time).await;
                 let v: Value = serde_json::json!({ "status": "ok" });
@@ -193,9 +250,9 @@ pub fn routes(
     });
 
     let root_route = warp::path::end().and_then({
-        println!("FFFFF: / route");
         let last_request_time = Arc::clone(&last_request_time);
         move || {
+            info!("Received call to route /.",);
             let last_request_time = Arc::clone(&last_request_time);
             async move {
                 update_last_request_time(&last_request_time).await;
@@ -205,19 +262,18 @@ pub fn routes(
     });
 
     let init_route = warp::path("init").and(warp::path::end()).and_then({
-        println!("FFFFF: /init route");
         let last_request_time = Arc::clone(&last_request_time);
         let api_proxies = Arc::clone(&api_proxies);
         let next_client_id = Arc::clone(&next_client_id);
 
         move || {
-            println!("FFFFF: /init route 2");
+            info!("Received call to route /init.",);
+
             let last_request_time = Arc::clone(&last_request_time);
             let api_proxies = Arc::clone(&api_proxies);
             let next_client_id = Arc::clone(&next_client_id);
 
             async move {
-                println!("FFFFF: /init route 3");
                 update_last_request_time(&last_request_time).await;
 
                 let mut next_client_id_g = next_client_id.lock().await;
@@ -228,12 +284,13 @@ pub fn routes(
                 {
                     let mut api_proxies = api_proxies.write().await;
                     api_proxies.insert(client_id_val, Arc::new(ApiProxy::new(client_id_val)));
-                    println!("FFFFF: /init route 4");
 
-                    println!("Printing the HashMap:");
-                    for (key, value) in &*api_proxies {
-                        println!("{}: {:p}", key, &value);
-                    }
+                    debug!("Added client_id {} to API proxy map.", client_id_val);
+
+                    // println!("Printing the HashMap:");
+                    // for (key, value) in &*api_proxies {
+                    //     println!("{}: {:p}", key, &value);
+                    // }
                 }
 
                 let v: Value = serde_json::json!({"client_id": client_id_val});
@@ -247,37 +304,38 @@ pub fn routes(
         .and(warp::path::end())
         .and(warp::query::<std::collections::HashMap<String, String>>())
         .and_then({
-            println!("FFFFF: /auth/cb route");
             let api_proxies = Arc::clone(&api_proxies);
             let last_request_time = Arc::clone(&last_request_time);
 
             move |query: std::collections::HashMap<String, String>| {
-                println!("Query EEEE: {:?}", query);
                 let last_request_time = Arc::clone(&last_request_time);
                 let api_proxies = Arc::clone(&api_proxies);
 
                 async move {
                     update_last_request_time(&last_request_time).await;
 
-                    // let code = query.get("code").map(|s| s.to_owned());
-                    // let api_manager = &mut server_meta.lock().unwrap().api_manager; // Borrow the ApiManager
-                    // println!("Received auth code: {:?}", code);
-
-                    // TODO get sent state which contains client_id and access
-                    // the corresponding ApiProxy in the hash map
-                    // then set the ApiProxy's cb_auth_code and notify
                     let client_id = query.get("state").and_then(|s| s.parse::<u64>().ok());
                     if client_id.is_none() {
+                        error!("Received call to route /auth/cb without client_id.");
                         return Ok::<_, warp::Rejection>(warp::reply::html(
                             "Sorry, something went wrong.",
                         ));
                     }
+
+                    info!(
+                        "Received call to route /auth/cb with client_id {}.",
+                        client_id.clone().unwrap()
+                    );
 
                     let proxy = {
                         let api_proxies = api_proxies.read().await;
                         if let Some(p) = api_proxies.get(&client_id.unwrap()) {
                             Arc::clone(p)
                         } else {
+                            error!(
+                                "No proxy found for client_id {}.",
+                                client_id.clone().unwrap()
+                            );
                             return Ok::<_, warp::Rejection>(warp::reply::html(
                                 "Sorry, something went wrong.",
                             ));
@@ -285,38 +343,21 @@ pub fn routes(
                     };
 
                     if let Some(code) = query.get("code") {
-                        println!("Received auth code: {:?}", code);
                         proxy.set_cb_auth_code(code.to_owned()).await;
                     } else {
+                        error!(
+                            "No callback authorization code found for client_id {}.",
+                            client_id.clone().unwrap()
+                        );
                         return Ok::<_, warp::Rejection>(warp::reply::html(
                             "Sorry, something went wrong.",
                         ));
                     }
 
-                    // OLD
-                    // Set the cb_auth_code and notify the waiting task
-                    // api_manager.cb_auth_code = code;
-                    // println!("Set auth code: {:?}", api_manager.cb_auth_code);
-                    // api_manager.cb_auth_notifier.notify_one(); // Notify that the code is ready
-
-                    // if let Some(code) = query.get("code") {
-                    //     {
-                    //         let api_manager =
-                    //             &mut server_meta.lock().unwrap().api_manager.write().unwrap();
-                    //         api_manager.cb_auth_code = Some(code.clone());
-                    //         println!("ApiManager pointer in callback: {:p}", api_manager);
-                    //         println!(
-                    //             "Received auth code and set it: {:?}",
-                    //             api_manager.cb_auth_code
-                    //         );
-                    //     }
-
-                    //     {
-                    //         let api_manager =
-                    //             &mut server_meta.lock().unwrap().api_manager.read().unwrap();
-                    //         api_manager.cb_auth_notifier.notify_one();
-                    //     }
-                    // }
+                    info!(
+                        "Set callback authorization code for client_id {}.",
+                        client_id.clone().unwrap()
+                    );
 
                     return Ok::<_, warp::Rejection>(warp::reply::html(
                         "Authorization received. You may close this tab.",

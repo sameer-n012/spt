@@ -1,7 +1,7 @@
 use reqwest::StatusCode;
 use std::fmt::Display;
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Eq, PartialEq)]
 pub enum ApiError {
     RequestError,        // Error occurred while making the request
     NoRefreshToken,      // No refresh token was found

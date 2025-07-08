@@ -1,6 +1,7 @@
 // use once_cell::sync::OnceCell;
 use crate::server::web::server::start_server;
-use crate::util::errors::{self, ApiError};
+use crate::util::errors::{self, return_response_code, ApiError};
+use log::{debug, error, info, warn};
 use reqwest::{Client, StatusCode};
 use serde_json::Value;
 use std::collections::HashMap;
@@ -50,23 +51,38 @@ impl ApiProxy {
     pub async fn setup(&mut self) -> Result<(), ApiError> {
         // This method is  used to perform any setup required for the API manager
 
+        debug!("Setting up client API proxy.");
+
         self.check_server(0).await?;
 
         let client_id =
             ApiProxy::get_client_id(&self.client, format!("{}/{}", self.base_url, "init")).await;
 
         match client_id {
-            Ok(id) => {
-                self.client_id = Some(id.trim_matches('"').parse::<u64>().unwrap_or(0));
-                return Ok(());
-            }
-            Err(_) => {
+            Ok(id) => match id.trim_matches('"').parse::<u64>() {
+                Ok(parsed_id) if parsed_id > 0 => {
+                    info!("Client recieved client_id {} from server.", parsed_id);
+                    self.client_id = Some(parsed_id);
+                    return Ok(());
+                }
+                _ => {
+                    error!("Client recieved invalid client_id from server.");
+                    return Err(ApiError::ResponseDataError);
+                }
+            },
+            Err(e) => {
+                error!(
+                    "Client requested client_id and received response from server with status {}.",
+                    return_response_code(e)
+                );
                 return Err(ApiError::InternalServerError);
             }
         }
     }
 
     async fn get_client_id(client: &Client, url: String) -> Result<String, ApiError> {
+        debug!("Client requesting client_id from server.");
+
         let response = client.get(&url).send().await;
         if response.is_ok() {
             let response = response.unwrap();
@@ -92,22 +108,18 @@ impl ApiProxy {
 
     // Method to check if server is running, and if not, start it
     pub async fn check_server(&self, retry: u8) -> Result<(), ApiError> {
-        println!("BBBB");
-
         let url = format!("{}/ping", self.base_url);
-
-        println!("URL: {}", url);
 
         let response = self.client.get(&url).send().await;
 
         if response.is_ok() && response.unwrap().status().as_u16() == 200 {
-            println!("Server is already up and running.");
+            info!("Client found server running.");
             return Ok(());
         } else {
             if retry >= self.max_server_retries {
                 return Err(ApiError::InternalServerError);
             }
-            println!("Server is down, attempting to start it...");
+            info!("Client found server down, attempting to start it.");
             let _ = start_server(self.server_port, self.server_timeout).await;
             // self.check_server(retry + 1).await?;
             return Ok(());
@@ -120,7 +132,6 @@ impl ApiProxy {
         endpoint: &str,
         params: Option<HashMap<&str, &str>>,
     ) -> Result<(StatusCode, Value), ApiError> {
-        println!("AAAA");
         // check if server is up, if not, start it
         // self.check_server(0).await?;
 
@@ -135,8 +146,6 @@ impl ApiProxy {
             endpoint,
             self.client_id.unwrap()
         );
-
-        println!("URL: {}", url);
 
         let request = self.client.get(&url).query(&params.unwrap_or_default());
 

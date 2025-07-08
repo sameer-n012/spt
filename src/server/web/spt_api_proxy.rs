@@ -1,6 +1,7 @@
 // use once_cell::sync::OnceCell;
 use crate::util::errors::{self, ApiError};
 use base64::{engine::general_purpose, Engine};
+use log::{debug, error, info, warn};
 use rand::Rng;
 use reqwest::{Client, StatusCode};
 use serde_json::Value;
@@ -81,58 +82,64 @@ impl ApiProxy {
     }
 
     pub async fn execute_backoff(&self) -> Result<(), ApiError> {
-        loop {
-            // get backoff lock here
-            let mut backoff = self.backoff.write().await;
+        // loop {
+        // get backoff lock here
+        let backoff = self.backoff.read().await;
 
-            // backoff if necessary
-            match backoff.duration_since(SystemTime::now()) {
-                Ok(duration) => {
-                    tokio::time::sleep(tokio::time::Duration::from_secs(duration.as_secs())).await;
-                }
-                Err(_) => {} // no backoff needed
+        // backoff if necessary
+        match backoff.duration_since(SystemTime::now()) {
+            Ok(duration) => {
+                debug!("Client {} entering backoff loop.", self.user_client_id);
+
+                tokio::time::sleep(tokio::time::Duration::from_secs(duration.as_secs())).await;
+
+                return Ok(());
             }
-
-            // send sample API call
-            let url = format!("{}/markets", self.base_url);
-
-            let auth_info = self.auth_info.read().await;
-
-            let request = self
-                .client
-                .get(&url)
-                .bearer_auth(&auth_info.access_token.clone().unwrap().0);
-
-            let response = match request.send().await {
-                Ok(res) => res,
-                Err(_) => return Err(ApiError::BackoffError),
-            };
-            let status = response.status();
-
-            // check if still rate limited
-            match status.as_u16() {
-                429 => {
-                    if let Some(retry_after) = response
-                        .headers()
-                        .get("Retry-After")
-                        .and_then(|header| header.to_str().ok())
-                        .and_then(|value| value.parse::<u64>().ok())
-                    {
-                        *backoff = SystemTime::now() + Duration::from_secs(retry_after);
-                    } else {
-                        *backoff = SystemTime::now() + Duration::from_secs(5);
-                        // default backoff
-                    }
-                    continue; // Retry after the backoff
-                }
-                200 => {
-                    return Ok(());
-                }
-                _ => {
-                    return Err(errors::return_response_error(status));
-                }
+            Err(_) => {
+                return Ok(()); // no backoff needed
             }
         }
+
+        // send sample API call
+        // let url = format!("{}/markets", self.base_url);
+
+        // let auth_info = self.auth_info.read().await;
+
+        // let request = self
+        //     .client
+        //     .get(&url)
+        //     .bearer_auth(&auth_info.access_token.clone().unwrap().0);
+
+        // let response = match request.send().await {
+        //     Ok(res) => res,
+        //     Err(_) => return Err(ApiError::BackoffError),
+        // };
+        // let status = response.status();
+
+        // // check if still rate limited
+        // match status.as_u16() {
+        //     429 => {
+        //         if let Some(retry_after) = response
+        //             .headers()
+        //             .get("Retry-After")
+        //             .and_then(|header| header.to_str().ok())
+        //             .and_then(|value| value.parse::<u64>().ok())
+        //         {
+        //             *backoff = SystemTime::now() + Duration::from_secs(retry_after);
+        //         } else {
+        //             *backoff = SystemTime::now() + Duration::from_secs(5);
+        //             // default backoff
+        //         }
+        //         continue; // Retry after the backoff
+        //     }
+        //     200 => {
+        //         return Ok(());
+        //     }
+        //     _ => {
+        //         return Err(errors::return_response_error(status));
+        //     }
+        // }
+        // }
     }
 
     fn gen_random_state(&self, len: usize) -> String {
@@ -153,6 +160,11 @@ impl ApiProxy {
 
     async fn auth(&self) -> Result<StatusCode, ApiError> {
         // self.execute_backoff().await?;
+
+        info!(
+            "Client {} attempting to aunthenticate.",
+            self.user_client_id
+        );
 
         // generate state and challenge
         let state = self.gen_random_state(64);
@@ -176,37 +188,25 @@ impl ApiProxy {
             Err(_) => return Err(ApiError::RequestError),
         };
 
-        println!("URL DDDDD: {}", url);
-
-        // Start callback server before opening the browser
-        // let server_task = tokio::spawn(start_callback_server(8081));
-
         if let Err(_) = open::that(url) {
             return Err(ApiError::BrowserError);
         }
 
-        println!("here 0");
-
-        // Await server response
-        // let code = match server_task.await {
-        //     Ok(code) => code,
-        //     Err(_) => Err(ApiError::InternalServerError),
-        // };
-
         let code: String = {
             self.cb_auth_notifier.notified().await;
-            println!("ApiManager pointer in receiver: {:p}", self);
 
             let mut auth_info = self.auth_info.write().await;
 
-            println!("CCCCC: {:?}", auth_info.cb_auth_code);
             auth_info
                 .cb_auth_code
                 .take()
                 .ok_or(ApiError::InternalServerError)?
         };
 
-        println!("here 0.5");
+        debug!(
+            "Client {} received callback authentication code.",
+            self.user_client_id
+        );
 
         // request parameters
         let params = [
@@ -232,15 +232,12 @@ impl ApiProxy {
         // self.unset_cb_auth_code().await;
 
         let status = response.status();
-        println!("s {}", status);
 
         if status.is_success() {
             // parse response json
             let json = match response.json::<Value>().await {
                 Ok(data) => data,
                 Err(_) => {
-                    println!("here 1");
-
                     return Err(ApiError::ResponseParseError);
                 }
             };
@@ -270,8 +267,15 @@ impl ApiProxy {
                 auth_info.refresh_token = Some(refresh_token);
             }
 
+            info!(
+                "Client {} successfully aunthenticated.",
+                self.user_client_id
+            );
+
             return Ok(status);
         }
+
+        error!("Client {} failed to authenticate.", self.user_client_id);
 
         Err(errors::return_response_error(status))
     }
@@ -289,7 +293,12 @@ impl ApiProxy {
             if rt.is_none() {
                 return self.auth().await;
             } else {
-                return self.reauth().await;
+                match self.reauth().await {
+                    Ok(status) => return Ok(status),
+                    Err(_) => {
+                        return self.auth().await;
+                    }
+                }
             }
         }
 
@@ -299,6 +308,11 @@ impl ApiProxy {
     // Method for refreshing the Spotify API token
     pub async fn reauth(&self) -> Result<StatusCode, ApiError> {
         // self.execute_backoff().await?;
+
+        info!(
+            "Client {} attempting to reaunthenticate.",
+            self.user_client_id
+        );
 
         // ensure refresh token is present
         let refresh_token = {
@@ -336,8 +350,6 @@ impl ApiProxy {
             let json = match response.json::<Value>().await {
                 Ok(data) => data,
                 Err(_) => {
-                    println!("here 2");
-
                     return Err(ApiError::ResponseParseError);
                 }
             };
@@ -367,10 +379,16 @@ impl ApiProxy {
                 }
             }
 
+            info!(
+                "Client {} successfully reaunthenticated.",
+                self.user_client_id
+            );
+
             return Ok(status);
         }
 
         // non-success response
+        warn!("Client {} failed to reaunthenticate.", self.user_client_id);
         return Err(errors::return_response_error(status));
     }
 
@@ -381,11 +399,9 @@ impl ApiProxy {
         params: Option<HashMap<&str, &str>>,
     ) -> Result<(StatusCode, Value), ApiError> {
         // check if access token is valid, if not, auth/reauth
-        println!("{}", endpoint);
         self.validate_auth().await?;
 
         // backoff
-        println!("{}", endpoint);
         self.execute_backoff().await?;
 
         // construct and send request
@@ -395,6 +411,11 @@ impl ApiProxy {
             let auth_info = self.auth_info.read().await;
             auth_info.access_token.clone()
         };
+
+        info!(
+            "Client {} sending request to {}/{}.",
+            self.user_client_id, self.base_url, endpoint
+        );
 
         let request = self
             .client
@@ -409,14 +430,24 @@ impl ApiProxy {
 
         let status = response.status();
 
+        if status.as_u16() == 200 || status.as_u16() == 204 {
+            info!(
+                "Client {} received response from {}/{} with status {}.",
+                self.user_client_id, self.base_url, endpoint, status
+            );
+        } else {
+            warn!(
+                "Client {} received response from {}/{} with status {}.",
+                self.user_client_id, self.base_url, endpoint, status
+            );
+        }
+
         // match status code
         match status.as_u16() {
             200 => {
                 let json = match response.json::<Value>().await {
                     Ok(data) => data,
                     Err(_) => {
-                        println!("here 3");
-
                         return Err(ApiError::ResponseParseError);
                     }
                 };
@@ -434,10 +465,19 @@ impl ApiProxy {
             }
             429 => {
                 // backoff if rate limited
+                let mut backoff = self.backoff.write().await;
+                if let Some(retry_after) = response
+                    .headers()
+                    .get("Retry-After")
+                    .and_then(|header| header.to_str().ok())
+                    .and_then(|value| value.parse::<u64>().ok())
                 {
-                    let mut backoff = self.backoff.write().await;
+                    *backoff = SystemTime::now() + Duration::from_secs(retry_after);
+                } else {
                     *backoff = SystemTime::now() + Duration::from_secs(5);
+                    // default backoff
                 }
+
                 return Err(ApiError::ResponseError429);
             }
             _ => Err(errors::return_response_error(status)),
@@ -464,6 +504,11 @@ impl ApiProxy {
             auth_info.access_token.clone()
         };
 
+        info!(
+            "Client {} sending request to {}/{}.",
+            self.user_client_id, self.base_url, endpoint
+        );
+
         let request = self
             .client
             .post(&url)
@@ -476,6 +521,18 @@ impl ApiProxy {
         };
 
         let status = response.status();
+
+        if status.as_u16() == 200 || status.as_u16() == 204 {
+            info!(
+                "Client {} received response from {}/{} with status {}.",
+                self.user_client_id, self.base_url, endpoint, status
+            );
+        } else {
+            warn!(
+                "Client {} received response from {}/{} with status {}.",
+                self.user_client_id, self.base_url, endpoint, status
+            );
+        }
 
         // match status code
         match status.as_u16() {
@@ -500,10 +557,19 @@ impl ApiProxy {
             }
             429 => {
                 // backoff if rate limited
+                let mut backoff = self.backoff.write().await;
+                if let Some(retry_after) = response
+                    .headers()
+                    .get("Retry-After")
+                    .and_then(|header| header.to_str().ok())
+                    .and_then(|value| value.parse::<u64>().ok())
                 {
-                    let mut backoff = self.backoff.write().await;
+                    *backoff = SystemTime::now() + Duration::from_secs(retry_after);
+                } else {
                     *backoff = SystemTime::now() + Duration::from_secs(5);
+                    // default backoff
                 }
+
                 return Err(ApiError::ResponseError429);
             }
             _ => Err(errors::return_response_error(status)),
@@ -530,6 +596,11 @@ impl ApiProxy {
             auth_info.access_token.clone()
         };
 
+        info!(
+            "Client {} sending request to {}/{}.",
+            self.user_client_id, self.base_url, endpoint
+        );
+
         let request = self
             .client
             .put(&url)
@@ -542,6 +613,18 @@ impl ApiProxy {
         };
 
         let status = response.status();
+
+        if status.as_u16() == 200 || status.as_u16() == 204 {
+            info!(
+                "Client {} received response from {}/{} with status {}.",
+                self.user_client_id, self.base_url, endpoint, status
+            );
+        } else {
+            warn!(
+                "Client {} received response from {}/{} with status {}.",
+                self.user_client_id, self.base_url, endpoint, status
+            );
+        }
 
         // match status code
         match status.as_u16() {
@@ -566,10 +649,19 @@ impl ApiProxy {
             }
             429 => {
                 // backoff if rate limited
+                let mut backoff = self.backoff.write().await;
+                if let Some(retry_after) = response
+                    .headers()
+                    .get("Retry-After")
+                    .and_then(|header| header.to_str().ok())
+                    .and_then(|value| value.parse::<u64>().ok())
                 {
-                    let mut backoff = self.backoff.write().await;
+                    *backoff = SystemTime::now() + Duration::from_secs(retry_after);
+                } else {
                     *backoff = SystemTime::now() + Duration::from_secs(5);
+                    // default backoff
                 }
+
                 return Err(ApiError::ResponseError429);
             }
             _ => Err(errors::return_response_error(status)),

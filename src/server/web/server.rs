@@ -1,3 +1,4 @@
+use log::{error, info, warn};
 use std::collections::HashMap;
 use std::env;
 use std::net::SocketAddr;
@@ -26,8 +27,6 @@ pub async fn start_server(
     port: u16,
     inactivity_timeout: Duration,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    println!("URL: {}", "AAAA");
-
     // Shared state to track the last request time
     let last_request_time = Arc::new(Mutex::new(Instant::now()));
     // let last_request_time_clone = Arc::clone(&last_request_time);
@@ -61,13 +60,15 @@ pub async fn start_server(
         handle_shutdown(
             shutdown_rx,
             Arc::clone(&server_meta.last_request_time),
-            inactivity_timeout,
+            server_meta.inactivity_timeout.clone(),
         ),
     );
 
-    println!("Server running at http://{}/", addr);
-    env::set_var("SPT_RUST_APP_SERVER_RUNNING", "1"); // TODO delete (unsafe)
     tokio::spawn(server);
+
+    env::set_var("SPT_RUST_APP_SERVER_RUNNING", "1"); // TODO delete (unsafe)
+
+    info!("Server running at http://{}/.", addr);
 
     Ok(())
 }
@@ -92,7 +93,7 @@ async fn handle_shutdown(
         //     println!("Shutdown signal received, closing server.");
         // }
         _ = check_inactive(last_request_time, inactivity_timeout) => {
-            println!("Server shut down due to inactivity.");
+            info!("Server shut down due to inactivity after {}s.", inactivity_timeout.as_secs());
         }
     }
 }
