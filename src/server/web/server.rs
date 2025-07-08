@@ -1,4 +1,4 @@
-use log::{debug, error, info, warn};
+use log::info;
 use std::collections::HashMap;
 use std::env;
 use std::net::SocketAddr;
@@ -6,7 +6,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::{Mutex, RwLock};
 
-use tokio::sync::oneshot;
+// use tokio::sync::oneshot;
 use tokio::time;
 
 use crate::server::web::routes;
@@ -16,8 +16,8 @@ use crate::server::web::spt_api_proxy::ApiProxy;
 pub struct ServerMeta {
     pub port: u16,
     pub inactivity_timeout: Duration,
-    pub db_url: String,
-    pub db_port: u16,
+    // pub db_url: String,
+    // pub db_port: u16,
     pub api_proxies: Arc<RwLock<HashMap<u64, Arc<ApiProxy>>>>,
     pub next_client_id: Arc<Mutex<u64>>,
     pub last_request_time: Arc<Mutex<Instant>>,
@@ -34,18 +34,18 @@ pub async fn start_server(
     let server_meta = ServerMeta {
         port,
         inactivity_timeout,
-        db_url: env::var("DB_URL").expect("DB_URL must be set"),
-        db_port: env::var("DB_PORT")
-            .expect("DB_PORT must be set")
-            .parse::<u16>()
-            .unwrap(),
+        // db_url: env::var("DB_URL").expect("DB_URL must be set"),
+        // db_port: env::var("DB_PORT")
+        //     .expect("DB_PORT must be set")
+        //     .parse::<u16>()
+        //     .unwrap(),
         api_proxies: Arc::new(RwLock::new(HashMap::new())),
         next_client_id: Arc::new(Mutex::new(1)),
         last_request_time: last_request_time,
     };
 
     // Shutdown signal - TODO delete
-    let (_, shutdown_rx) = oneshot::channel();
+    // let (_, shutdown_rx) = oneshot::channel();
 
     let routes = routes::routes(
         Arc::clone(&server_meta.api_proxies),
@@ -54,11 +54,11 @@ pub async fn start_server(
     );
 
     // Start the server with graceful shutdown
-    let addr = SocketAddr::from(([127, 0, 0, 1], port));
+    let addr = SocketAddr::from(([127, 0, 0, 1], server_meta.port));
     let (addr, server) = warp::serve(routes).bind_with_graceful_shutdown(
         addr,
         handle_shutdown(
-            shutdown_rx,
+            // shutdown_rx,
             Arc::clone(&server_meta.last_request_time),
             server_meta.inactivity_timeout.clone(),
         ),
@@ -84,7 +84,7 @@ async fn check_inactive(last_request_time: Arc<Mutex<Instant>>, timeout: Duratio
 }
 
 async fn handle_shutdown(
-    shutdown_rx: oneshot::Receiver<()>,
+    // shutdown_rx: oneshot::Receiver<()>,
     last_request_time: Arc<Mutex<Instant>>,
     inactivity_timeout: Duration,
 ) {

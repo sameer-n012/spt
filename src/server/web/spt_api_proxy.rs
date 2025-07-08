@@ -26,7 +26,7 @@ pub struct ApiProxy {
     client: Client,
 
     application_id: String,
-    application_secret: String,
+    // application_secret: String,
     scope: String,
 
     base_url: String,
@@ -41,8 +41,8 @@ pub struct ApiProxy {
 impl ApiProxy {
     pub fn new(user_client_id: u64) -> Self {
         let client_id = env::var("SPT_API_CLIENT_ID").expect("SPT_API_CLIENT_ID must be set");
-        let client_secret =
-            env::var("SPT_API_CLIENT_SECRET").expect("SPT_API_CLIENT_SECRET must be set");
+        // let client_secret =
+        //     env::var("SPT_API_CLIENT_SECRET").expect("SPT_API_CLIENT_SECRET must be set");
         let base_url = env::var("SPT_API_BASE_URL").expect("SPT_API_BASE_URL must be set");
         let callback_url =
             env::var("SERVER_CALLBACK_URL").expect("SERVER_CALLBACK_URL must be set");
@@ -52,7 +52,7 @@ impl ApiProxy {
             client: Client::new(),
 
             application_id: client_id,
-            application_secret: client_secret,
+            // application_secret: client_secret,
             scope,
 
             base_url,
@@ -276,6 +276,13 @@ impl ApiProxy {
 
         error!("Client {} failed to authenticate.", self.user_client_id);
 
+        {
+            let mut auth_info = self.auth_info.write().await;
+            auth_info.access_token = None;
+            auth_info.refresh_token = None;
+        }
+        self.unset_cb_auth_code().await;
+
         Err(errors::return_response_error(status))
     }
 
@@ -388,6 +395,14 @@ impl ApiProxy {
 
         // non-success response
         warn!("Client {} failed to reaunthenticate.", self.user_client_id);
+
+        {
+            let mut auth_info = self.auth_info.write().await;
+            auth_info.access_token = None;
+            auth_info.refresh_token = None;
+        }
+        self.unset_cb_auth_code().await;
+
         return Err(errors::return_response_error(status));
     }
 
