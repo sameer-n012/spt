@@ -1,7 +1,7 @@
-use chrono::{Date, Local};
+use chrono::Local;
 use dotenvy::dotenv;
 use fern::Dispatch;
-use log::{debug, error, info, warn, LevelFilter};
+use log::{error, info, LevelFilter};
 use tokio;
 
 mod server {

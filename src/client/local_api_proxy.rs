@@ -264,6 +264,52 @@ impl ApiProxy {
         }
     }
 
+    // Method for sending DELETE requests to the Spotify API
+    pub async fn delete(
+        &self,
+        endpoint: &str,
+        body: Option<Value>,
+    ) -> Result<(StatusCode, Value), ApiError> {
+        // check if server is up, if not, start it
+        // self.check_server(0).await?;
+
+        if self.client_id.is_none() {
+            return Err(ApiError::InvalidAccessToken);
+        }
+
+        // construct and send request
+        let url = format!(
+            "{}/{}?client_id={}",
+            self.base_url,
+            endpoint,
+            self.client_id.unwrap()
+        );
+
+        let request = self.client.delete(&url).json(&body.unwrap_or_default());
+
+        let response = match request.send().await {
+            Ok(res) => res,
+            Err(_) => return Err(ApiError::RequestError),
+        };
+
+        let status = response.status();
+
+        // match status code
+        match status.as_u16() {
+            200 => {
+                let json = match response.json::<Value>().await {
+                    Ok(data) => data,
+                    Err(_) => {
+                        return Err(ApiError::ResponseParseError);
+                    }
+                };
+                return Ok((status, json));
+            }
+            204 => Ok((status, serde_json::json!({}))),
+            _ => Err(errors::return_response_error(status)),
+        }
+    }
+
     // Example method to get devices (for demonstration purposes)
     // pub async fn get_devices(&self) -> Result<(StatusCode, serde_json::Value), Error> {
     //     self.get("me/player/devices", None).await

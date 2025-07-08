@@ -1,11 +1,10 @@
 use log::{debug, error, info, warn};
-use reqwest::StatusCode;
 use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Instant;
 use tokio::sync::{Mutex, RwLock};
-use warp::{any, Filter, Rejection, Reply};
+use warp::{Filter, Rejection, Reply};
 
 use crate::server::web::spt_api_proxy::ApiProxy;
 use crate::util::errors::return_response_code;
@@ -18,7 +17,8 @@ enum RouteType {
     Delete,
 }
 
-fn construct_json_fwd_get_route(
+fn construct_json_fwd_route_no_body(
+    route_type: RouteType,
     full_route: &str,
     api_proxies: Arc<RwLock<HashMap<u64, Arc<ApiProxy>>>>,
     last_request_time: Arc<Mutex<Instant>>,
@@ -31,19 +31,26 @@ fn construct_json_fwd_get_route(
         route = route.and(warp::path(part.clone())).boxed();
     }
 
-    // test
-    // let a = any().and(warp::path("hi")).and(warp::path("there"));
+    if route_type == RouteType::Post
+        || route_type == RouteType::Put
+        || route_type == RouteType::Delete
+    {
+        error!("Cannot construct POST/PUT/DELETE route without body.");
+        panic!();
+    }
 
     route
         .and(warp::path::end())
+        .and(warp::get())
         .and(warp::query::<std::collections::HashMap<String, String>>())
         .and_then({
             let full_route = full_route.clone();
+            let route_type = route_type.clone();
 
             move |query: std::collections::HashMap<String, String>| {
                 let last_request_time = Arc::clone(&last_request_time);
                 let api_proxies = Arc::clone(&api_proxies);
-
+                let route_type = route_type.clone();
                 let full_route = full_route.clone();
 
                 async move {
@@ -83,13 +90,23 @@ fn construct_json_fwd_get_route(
 
                     let proxy = proxy.unwrap();
                     let shortened_route = &full_route["api/spt-fwd/".len()..];
-                    let res = proxy.get(shortened_route, None).await;
+                    let res = match route_type.clone() {
+                        RouteType::Get => proxy.get(shortened_route, None).await,
+                        RouteType::Delete => {
+                            error!("Cannot construct DELETE route without body.");
+                            proxy.get(shortened_route, None).await
+                        }
+                        RouteType::Post => {
+                            error!("Cannot construct POST route without body.");
+                            proxy.get(shortened_route, None).await
+                        }
+                        RouteType::Put => {
+                            error!("Cannot construct PUT route without body.");
+                            proxy.get(shortened_route, None).await
+                        }
+                    };
 
                     match res {
-                        // Ok((status, json)) => Ok::<_, warp::Rejection>(warp::reply::with_status(
-                        //     warp::reply::json(&json),
-                        //     status,
-                        // )),
                         Ok((status, json)) => {
                             info!(
                                 "Forwarding request to route /{} with status {}.",
@@ -100,12 +117,114 @@ fn construct_json_fwd_get_route(
                                 status,
                             ))
                         }
-                        // Err(err) => Ok::<_, warp::Rejection>(warp::reply::with_status(
-                        //     warp::reply::json(&serde_json::json!({
-                        //         "error": format!("Error: {}", err)
-                        //     })),
-                        //     return_response_code(err),
-                        // )),
+                        Err(err) => {
+                            warn!(
+                                "Forwarding request to route /{} with status {}.",
+                                full_route,
+                                return_response_code(err.clone())
+                            );
+                            Ok::<_, warp::Rejection>(warp::reply::with_status(
+                                warp::reply::json(&serde_json::json!({
+                                    "error": format!("Error: {}", err)
+                                })),
+                                return_response_code(err),
+                            ))
+                        }
+                    }
+                }
+            }
+        })
+}
+
+fn construct_json_fwd_route_with_body(
+    route_type: RouteType,
+    full_route: &str,
+    api_proxies: Arc<RwLock<HashMap<u64, Arc<ApiProxy>>>>,
+    last_request_time: Arc<Mutex<Instant>>,
+) -> impl Filter<Extract = (warp::reply::WithStatus<warp::reply::Json>,), Error = Rejection> + Clone
+{
+    let full_route = full_route.to_string();
+    let path_parts: Vec<_> = full_route.split('/').map(String::from).collect();
+    let mut route = warp::any().boxed();
+    for part in path_parts.iter() {
+        route = route.and(warp::path(part.clone())).boxed();
+    }
+
+    if route_type == RouteType::Get {
+        // error
+        error!("Cannot construct GET route with body.");
+        panic!();
+    }
+
+    route
+        .and(warp::path::end())
+        .and(warp::post())
+        .and(warp::body::json::<serde_json::Value>())
+        .and_then({
+            let full_route = full_route.clone();
+            let route_type = route_type.clone();
+
+            move |body: serde_json::Value| {
+                let last_request_time = Arc::clone(&last_request_time);
+                let api_proxies = Arc::clone(&api_proxies);
+                let full_route = full_route.clone();
+                let route_type = route_type.clone();
+
+                async move {
+                    update_last_request_time(&last_request_time).await;
+
+                    let client_id = body["client_id"].as_u64();
+                    if client_id.is_none() {
+                        error!("Received call to route /{} without client_id.", full_route);
+                        return Ok::<_, warp::Rejection>(warp::reply::with_status(
+                            warp::reply::json(&serde_json::json!({})),
+                            warp::http::StatusCode::FORBIDDEN,
+                        ));
+                    }
+
+                    info!(
+                        "Received call to route /{} from client_id {}.",
+                        full_route,
+                        client_id.unwrap()
+                    );
+
+                    let proxy = if let Some(id) = client_id {
+                        let proxies = api_proxies.read().await;
+                        proxies.get(&id).map(Arc::clone)
+                    } else {
+                        None
+                    };
+                    if proxy.is_none() {
+                        error!("No proxy found for client_id {}.", client_id.unwrap());
+                        return Ok::<_, warp::Rejection>(warp::reply::with_status(
+                            warp::reply::json(&serde_json::json!({})),
+                            warp::http::StatusCode::FORBIDDEN,
+                        ));
+                    }
+
+                    let proxy = proxy.unwrap();
+                    let shortened_route = &full_route["api/spt-fwd/".len()..];
+                    let res = match route_type.clone() {
+                        RouteType::Get => {
+                            error!("Cannot construct GET route with body.");
+                            proxy.get(shortened_route, None).await
+                        }
+                        RouteType::Put => proxy.put(shortened_route, Some(body)).await,
+                        RouteType::Post => proxy.post(shortened_route, Some(body)).await,
+                        RouteType::Delete => proxy.delete(shortened_route, Some(body)).await,
+                    };
+
+                    match res {
+                        Ok((status, json)) => {
+                            info!(
+                                "Forwarding request to route /{} with status {}.",
+                                full_route, status
+                            );
+                            Ok::<_, warp::Rejection>(warp::reply::with_status(
+                                warp::reply::json(&json),
+                                status,
+                            ))
+                        }
                         Err(err) => {
                             warn!(
                                 "Forwarding request to route /{} with status {}.",
@@ -133,13 +252,11 @@ fn construct_json_fwd_route(
 ) -> impl Filter<Extract = (warp::reply::WithStatus<warp::reply::Json>,), Error = Rejection> + Clone
 {
     if route_type == RouteType::Get {
-        construct_json_fwd_get_route(full_route, api_proxies, last_request_time)
-    } else if route_type == RouteType::Put {
-        construct_json_fwd_get_route(full_route, api_proxies, last_request_time)
-    } else if route_type == RouteType::Post {
-        construct_json_fwd_get_route(full_route, api_proxies, last_request_time)
+        construct_json_fwd_route_no_body(RouteType::Get, full_route, api_proxies, last_request_time)
+            .boxed()
     } else {
-        construct_json_fwd_get_route(full_route, api_proxies, last_request_time)
+        construct_json_fwd_route_with_body(route_type, full_route, api_proxies, last_request_time)
+            .boxed()
     }
 }
 
@@ -175,66 +292,6 @@ pub fn routes(
             )
         })
         .fold(initial_route, |acc, route| acc.or(route).unify().boxed());
-
-    // let now_route = warp::path("api")
-    //     .and(warp::path("spt-fwd"))
-    //     .and(warp::path("me"))
-    //     .and(warp::path("player"))
-    //     .and(warp::path("currently-playing"))
-    //     .and(warp::path::end())
-    //     .and(warp::query::<std::collections::HashMap<String, String>>())
-    //     .and_then({
-
-    //         let last_request_time = Arc::clone(&last_request_time);
-    //         let api_proxies = Arc::clone(&api_proxies);
-
-    //         move |query: std::collections::HashMap<String, String>| {
-    //             let last_request_time = Arc::clone(&last_request_time);
-    //             let api_proxies = Arc::clone(&api_proxies);
-
-    //             async move {
-    //                 update_last_request_time(&last_request_time).await;
-
-    //                 let client_id = query.get("client_id").and_then(|s| s.parse::<u64>().ok());
-    //                 if client_id.is_none() {
-    //                     return Ok::<_, warp::Rejection>(warp::reply::with_status(
-    //                         warp::reply::json(&serde_json::json!({})), // TODO figure out how to make just warp::reply()
-    //                         warp::http::StatusCode::FORBIDDEN,
-    //                     ));
-    //                 }
-
-    //                 let proxy = if let Some(id) = client_id {
-    //                     let proxies = api_proxies.read().await;
-    //                     proxies.get(&id).map(|p| Arc::clone(p))
-    //                 } else {
-    //                     None
-    //                 };
-    //                 if proxy.is_none() {
-    //                     return Ok::<_, warp::Rejection>(warp::reply::with_status(
-    //                         warp::reply::json(&serde_json::json!({})), // TODO figure out how to make just warp::reply()
-    //                         warp::http::StatusCode::FORBIDDEN,
-    //                     ));
-    //                 }
-
-    //                 let proxy = proxy.unwrap();
-
-    //                 let res = proxy.get("me/player/currently-playing", None).await;
-
-    //                 match res {
-    //                     Ok((status, json)) => Ok::<_, warp::Rejection>(warp::reply::with_status(
-    //                         warp::reply::json(&json),
-    //                         status,
-    //                     )),
-    //                     Err(err) => Ok::<_, warp::Rejection>(warp::reply::with_status(
-    //                         warp::reply::json(&serde_json::json!({
-    //                             "error": format!("Error: {}", err)
-    //                         })),
-    //                         return_response_code(err),
-    //                     )),
-    //                 }
-    //             }
-    //         }
-    //     });
 
     let ping_route = warp::path("ping").and(warp::path::end()).and_then({
         let last_request_time = Arc::clone(&last_request_time);

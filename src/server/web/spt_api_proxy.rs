@@ -1,4 +1,3 @@
-// use once_cell::sync::OnceCell;
 use crate::util::errors::{self, ApiError};
 use base64::{engine::general_purpose, Engine};
 use log::{debug, error, info, warn};
@@ -604,6 +603,98 @@ impl ApiProxy {
         let request = self
             .client
             .put(&url)
+            .bearer_auth(access_token.ok_or_else(|| ApiError::NoAccessToken)?.0)
+            .json(&body.unwrap_or_default());
+
+        let response = match request.send().await {
+            Ok(res) => res,
+            Err(_) => return Err(ApiError::RequestError),
+        };
+
+        let status = response.status();
+
+        if status.as_u16() == 200 || status.as_u16() == 204 {
+            info!(
+                "Client {} received response from {}/{} with status {}.",
+                self.user_client_id, self.base_url, endpoint, status
+            );
+        } else {
+            warn!(
+                "Client {} received response from {}/{} with status {}.",
+                self.user_client_id, self.base_url, endpoint, status
+            );
+        }
+
+        // match status code
+        match status.as_u16() {
+            200 => {
+                let json = match response.json::<Value>().await {
+                    Ok(data) => data,
+                    Err(_) => {
+                        return Err(ApiError::ResponseParseError);
+                    }
+                };
+                return Ok((status, json));
+            }
+            204 => Ok((status, serde_json::json!({}))),
+            401 => {
+                // refresh access token if needed
+                {
+                    let mut auth_info = self.auth_info.write().await;
+                    auth_info.access_token = None;
+                }
+                self.validate_auth().await?;
+                return Err(ApiError::InvalidAccessToken);
+            }
+            429 => {
+                // backoff if rate limited
+                let mut backoff = self.backoff.write().await;
+                if let Some(retry_after) = response
+                    .headers()
+                    .get("Retry-After")
+                    .and_then(|header| header.to_str().ok())
+                    .and_then(|value| value.parse::<u64>().ok())
+                {
+                    *backoff = SystemTime::now() + Duration::from_secs(retry_after);
+                } else {
+                    *backoff = SystemTime::now() + Duration::from_secs(5);
+                    // default backoff
+                }
+
+                return Err(ApiError::ResponseError429);
+            }
+            _ => Err(errors::return_response_error(status)),
+        }
+    }
+
+    // Method for sending DELETE requests to the Spotify API
+    pub async fn delete(
+        &self,
+        endpoint: &str,
+        body: Option<Value>,
+    ) -> Result<(StatusCode, Value), ApiError> {
+        // backoff
+        self.execute_backoff().await?;
+
+        // check if access token is valid, if not, auth/reauth
+        self.validate_auth().await?;
+
+        // construct and send request
+        let url = format!("{}/{}", self.base_url, endpoint);
+
+        let access_token = {
+            let auth_info = self.auth_info.read().await;
+            auth_info.access_token.clone()
+        };
+
+        info!(
+            "Client {} sending request to {}/{}.",
+            self.user_client_id, self.base_url, endpoint
+        );
+
+        let request = self
+            .client
+            .delete(&url)
             .bearer_auth(access_token.ok_or_else(|| ApiError::NoAccessToken)?.0)
             .json(&body.unwrap_or_default());
 
