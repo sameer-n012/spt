@@ -61,6 +61,8 @@ fn construct_json_fwd_get_route(
                         ));
                     }
 
+                    println!("FFFFF: {} route", full_route);
+
                     let proxy = proxy.unwrap();
                     let shortened_route = &full_route["api/spt-fwd/".len()..];
                     let res = proxy.get(shortened_route, None).await;
@@ -89,7 +91,11 @@ pub fn routes(
 ) -> impl Filter<Extract = impl Reply, Error = Rejection> + Clone {
     // Define the routes
 
-    let json_fwd_get_routes = vec!["api/spt-fwd/me/player/currently-playing"];
+    let json_fwd_get_routes = vec![
+        "api/spt-fwd/me/player",
+        "api/spt-fwd/me/player/currently-playing",
+        "api/spt-fwd/me/player/devices",
+    ];
 
     let initial_route = construct_json_fwd_get_route(
         json_fwd_get_routes[0],

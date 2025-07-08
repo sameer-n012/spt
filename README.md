@@ -7,12 +7,15 @@
 ### Features
 
 - [ ] Playback Control
+  - [x] Now Playing
   - [ ] Play
   - [ ] Pause
   - [ ] Next
   - [ ] Previous
+  - [x] Show Volume
   - [ ] Volume Control
   - [ ] Device Selection
+  - [x] Show Devices
 - [ ] Search
   - [ ] Song
   - [ ] Artist

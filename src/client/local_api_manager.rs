@@ -116,7 +116,7 @@ impl ApiProxy {
 
     // Method for sending GET requests to the Spotify API
     pub async fn get(
-        &mut self,
+        &self,
         endpoint: &str,
         params: Option<HashMap<&str, &str>>,
     ) -> Result<(StatusCode, Value), ApiError> {
@@ -165,7 +165,7 @@ impl ApiProxy {
 
     // Method for sending POST requests to the Spotify API
     pub async fn post(
-        &mut self,
+        &self,
         endpoint: &str,
         body: Option<Value>,
     ) -> Result<(StatusCode, Value), ApiError> {
@@ -211,7 +211,7 @@ impl ApiProxy {
 
     // Method for sending PUT requests to the Spotify API
     pub async fn put(
-        &mut self,
+        &self,
         endpoint: &str,
         body: Option<Value>,
     ) -> Result<(StatusCode, Value), ApiError> {

@@ -21,65 +21,58 @@ pub enum Commands {
     Play,  // sets playback to play
     Pause, // sets playback to pause
     Previous {
-        n: Option<u8>,
+        n: Option<u8>, // if not None, skips to nth previous track (None = 1)
     }, // skips to nth previous track
     Next {
-        n: Option<u8>,
+        n: Option<u8>, // if not None, skips to nth next track (None = 1)
     }, // skips to nth next track
     Volume {
-        level: Option<u8>,
+        level: Option<u8>, // if not None, desired volume level
     }, // sets volume to level or gets volume level
     Device {
         name: String,
-    },
-    User,
-    Now,
+    }, // sets the playback device by name
+    User,  // gets information about the current user
+    Now,   // gets now playing information
     Devices {
-        h: Option<bool>,
-    },
+        h: Option<bool>, // if true, human readable (device names)
+    }, // gets a list of available devices
     Playlists {
-        i: Option<bool>,
-        h: Option<bool>,
-    },
-    Playlist {
-        uris: String,
-        i: Option<bool>,
-        h: Option<bool>,
-    },
+        uris: String,    // the URIs of the playlists
+        i: Option<bool>, // if true, internal representation (playlist/track IDs)
+        h: Option<bool>, // if true, human readable (playlist names, tracks)
+    }, // gets a list of playlists, shows tracks if URIs were provided
     PlaylistAdd {
-        name: String,
-        uris: String,
-    },
+        name: String, // the name of the playlist
+        uris: String, // the URIs of the tracks to add
+    }, // adds tracks to a playlist
     PlaylistRemove {
-        name: String,
-        uris: String,
-    },
+        name: String, // the name of the playlist
+        uris: String, // the URIs of the tracks to remove
+    }, // removes tracks from a playlist
     PlaylistCreate {
-        name: String,
-        uris: String,
-    },
+        name: String, // the name of the new playlist
+        uris: String, // the URIs of the tracks to add
+    }, // creates a new playlist with tracks
     PlaylistDelete {
-        name: String,
+        name: String, // the name of the playlist to delete
     },
     Search {
-        query: String,
-        i: Option<bool>,
-        h: Option<bool>,
+        query: String,   // the search query
+        i: Option<bool>, // if true, internal representation (track IDs)
+        h: Option<bool>, // if true, human readable (track names, albums, artists)
     },
     Describe {
-        uris: String,
+        uris: String, // the URIs of the tracks to describe
+    }, // describes tracks by URIs
+    Filter {
+        query: String, // the filter query
+        uris: String,  // the URIs of the tracks to filter
     },
     Queue {
-        uris: String,
-    },
-    Clear,
-    Push {
-        uris: String,
-    },
-    Filter {
-        query: String,
-        uris: String,
-    },
+        uris: Option<String>, // if not None, queue tracks by URIs, show queue
+    }, // queues tracks by URIs or shows the current queue
+    Clear, // clears the current queue
 }
 
 pub async fn run_cli(api_manager: &mut ApiProxy) {
@@ -126,25 +119,21 @@ pub async fn run_cli(api_manager: &mut ApiProxy) {
         Commands::Device { name } => {
             playback_manager.device(name);
         }
+        Commands::Devices { h } => {
+            output = Some(playback_manager.devices(h.unwrap_or(false)).await);
+        }
+        Commands::Now => {
+            output = Some(playback_manager.now().await);
+        }
 
         // Status Information
         Commands::User => {
             //status_manager.user();
         }
-        Commands::Devices { h } => {
-            //status_manager.devices();
-        }
-        Commands::Now => {
-            output = Some(playback_manager.now().await);
-            output = Some(output.unwrap() + &playback_manager.now().await);
-        }
 
         // Playlist Management
-        Commands::Playlists { i, h } => {
+        Commands::Playlists { uris, i, h } => {
             // playlist_manager.playlists();
-        }
-        Commands::Playlist { uris, i, h } => {
-            //playlist_manager.playlist(uris);
         }
         Commands::PlaylistAdd { name, uris } => {
             //playlist_manager.playlist_add(name, uris);
@@ -176,11 +165,6 @@ pub async fn run_cli(api_manager: &mut ApiProxy) {
         }
         Commands::Clear => {
             // queue_manager.clear();
-        }
-
-        // Transaction Management
-        Commands::Push { uris } => {
-            // transaction_manager.push(uris);
         }
     }
 
