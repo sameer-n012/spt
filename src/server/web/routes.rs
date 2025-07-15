@@ -37,11 +37,12 @@ fn construct_json_fwd_route_no_body(
     {
         error!("Cannot construct POST/PUT/DELETE route without body.");
         panic!();
+    } else if route_type == RouteType::Get {
+        route = route.and(warp::get()).boxed();
     }
 
     route
         .and(warp::path::end())
-        .and(warp::get())
         .and(warp::query::<std::collections::HashMap<String, String>>())
         .and_then({
             let full_route = full_route.clone();
@@ -91,18 +92,18 @@ fn construct_json_fwd_route_no_body(
                     let proxy = proxy.unwrap();
                     let shortened_route = &full_route["api/spt-fwd/".len()..];
                     let res = match route_type.clone() {
-                        RouteType::Get => proxy.get(shortened_route, None).await,
+                        RouteType::Get => proxy.get(shortened_route, Some(query)).await,
                         RouteType::Delete => {
                             error!("Cannot construct DELETE route without body.");
-                            proxy.get(shortened_route, None).await
+                            proxy.delete(shortened_route, None, None).await
                         }
                         RouteType::Post => {
                             error!("Cannot construct POST route without body.");
-                            proxy.get(shortened_route, None).await
+                            proxy.post(shortened_route, None, None).await
                         }
                         RouteType::Put => {
                             error!("Cannot construct PUT route without body.");
-                            proxy.get(shortened_route, None).await
+                            proxy.put(shortened_route, None, None).await
                         }
                     };
 
@@ -154,17 +155,23 @@ fn construct_json_fwd_route_with_body(
         // error
         error!("Cannot construct GET route with body.");
         panic!();
+    } else if route_type == RouteType::Post {
+        route = route.and(warp::post()).boxed();
+    } else if route_type == RouteType::Put {
+        route = route.and(warp::put()).boxed();
+    } else if route_type == RouteType::Delete {
+        route = route.and(warp::delete()).boxed();
     }
 
     route
         .and(warp::path::end())
-        .and(warp::post())
+        .and(warp::query::<std::collections::HashMap<String, String>>())
         .and(warp::body::json::<serde_json::Value>())
         .and_then({
             let full_route = full_route.clone();
             let route_type = route_type.clone();
 
-            move |body: serde_json::Value| {
+            move |query: std::collections::HashMap<String, String>, body: serde_json::Value| {
                 let last_request_time = Arc::clone(&last_request_time);
                 let api_proxies = Arc::clone(&api_proxies);
                 let full_route = full_route.clone();
@@ -209,9 +216,13 @@ fn construct_json_fwd_route_with_body(
                             error!("Cannot construct GET route with body.");
                             proxy.get(shortened_route, None).await
                         }
-                        RouteType::Put => proxy.put(shortened_route, Some(body)).await,
-                        RouteType::Post => proxy.post(shortened_route, Some(body)).await,
-                        RouteType::Delete => proxy.delete(shortened_route, Some(body)).await,
+                        RouteType::Put => proxy.put(shortened_route, Some(body), Some(query)).await,
+                        RouteType::Post => {
+                            proxy.post(shortened_route, Some(body), Some(query)).await
+                        }
+                        RouteType::Delete => {
+                            proxy.delete(shortened_route, Some(body), Some(query)).await
+                        }
                     };
 
                     match res {

@@ -410,7 +410,7 @@ impl ApiProxy {
     pub async fn get(
         &self,
         endpoint: &str,
-        params: Option<HashMap<&str, &str>>,
+        params: Option<HashMap<String, String>>,
     ) -> Result<(StatusCode, Value), ApiError> {
         // check if access token is valid, if not, auth/reauth
         self.validate_auth().await?;
@@ -503,6 +503,7 @@ impl ApiProxy {
         &self,
         endpoint: &str,
         body: Option<Value>,
+        params: Option<HashMap<String, String>>,
     ) -> Result<(StatusCode, Value), ApiError> {
         // backoff
         self.execute_backoff().await?;
@@ -526,6 +527,7 @@ impl ApiProxy {
         let request = self
             .client
             .post(&url)
+            .query(&params.unwrap_or_default())
             .bearer_auth(access_token.ok_or_else(|| ApiError::NoAccessToken)?.0)
             .json(&body.unwrap_or_default());
 
@@ -595,6 +597,7 @@ impl ApiProxy {
         &self,
         endpoint: &str,
         body: Option<Value>,
+        params: Option<HashMap<String, String>>,
     ) -> Result<(StatusCode, Value), ApiError> {
         // backoff
         self.execute_backoff().await?;
@@ -618,6 +621,7 @@ impl ApiProxy {
         let request = self
             .client
             .put(&url)
+            .query(&params.unwrap_or_default())
             .bearer_auth(access_token.ok_or_else(|| ApiError::NoAccessToken)?.0)
             .json(&body.unwrap_or_default());
 
@@ -687,6 +691,7 @@ impl ApiProxy {
         &self,
         endpoint: &str,
         body: Option<Value>,
+        params: Option<HashMap<String, String>>,
     ) -> Result<(StatusCode, Value), ApiError> {
         // backoff
         self.execute_backoff().await?;
@@ -710,6 +715,7 @@ impl ApiProxy {
         let request = self
             .client
             .delete(&url)
+            .query(&params.unwrap_or_default())
             .bearer_auth(access_token.ok_or_else(|| ApiError::NoAccessToken)?.0)
             .json(&body.unwrap_or_default());
 

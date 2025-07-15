@@ -33,7 +33,9 @@ pub enum Commands {
         name: String,
     }, // sets the playback device by name
     User,  // gets information about the current user
-    Now,   // gets now playing information
+    Now {
+        h: Option<bool>, // if true, human readable (track name, artist, album)
+    }, // gets now playing information
     Devices {
         h: Option<bool>, // if true, human readable (device names)
     }, // gets a list of available devices
@@ -70,9 +72,13 @@ pub enum Commands {
         uris: String,  // the URIs of the tracks to filter
     },
     Queue {
-        uris: Option<String>, // if not None, queue tracks by URIs, show queue
+        uris: Option<Vec<String>>, // if not None, queue tracks by URIs, show queue
+        h: Option<bool>,           // if true, human readable (track names, artists)
     }, // queues tracks by URIs or shows the current queue
-    Clear, // clears the current queue
+    Recent {
+        n: Option<u8>,   // if not None, number of recent tracks to show (None = 20)
+        h: Option<bool>, // if true, human readable (track names, artists)
+    }, // gets recent history
 }
 
 pub async fn run_cli(api_proxy: &mut ApiProxy) {
@@ -90,40 +96,44 @@ pub async fn run_cli(api_proxy: &mut ApiProxy) {
     match &cli.command {
         // Playback Control
         Commands::Play => {
-            playback_manager.play();
+            output = playback_manager.play().await;
         }
         Commands::Pause => {
-            playback_manager.pause();
+            output = playback_manager.pause().await;
         }
         Commands::Next { n } => {
-            if n.is_none() {
-                playback_manager.next(1);
-            } else {
-                playback_manager.next(n.unwrap());
-            }
+            output = playback_manager.next(n.unwrap_or(1)).await;
         }
         Commands::Previous { n } => {
-            if n.is_none() {
-                playback_manager.previous(1);
-            } else {
-                playback_manager.previous(n.unwrap());
-            }
+            output = playback_manager.previous(n.unwrap_or(1)).await;
         }
         Commands::Volume { level } => {
             if level.is_none() {
-                playback_manager.get_volume();
+                output = playback_manager.get_volume().await;
             } else {
-                playback_manager.set_volume(level.unwrap());
+                output = playback_manager.set_volume(level.unwrap()).await;
             }
         }
         Commands::Device { name } => {
-            playback_manager.device(name);
+            output = playback_manager.device(name).await;
         }
         Commands::Devices { h } => {
-            output = Some(playback_manager.devices(h.unwrap_or(false)).await);
+            output = playback_manager.devices(h.unwrap_or(false)).await;
         }
-        Commands::Now => {
-            output = Some(playback_manager.now().await);
+        Commands::Now { h } => {
+            output = playback_manager.now(h.unwrap_or(false)).await;
+        }
+        Commands::Queue { uris, h } => {
+            if uris.is_none() {
+                output = playback_manager.queue(h.unwrap_or(false)).await;
+            } else {
+                output = playback_manager.queue_add(uris.to_owned().unwrap()).await;
+            }
+        }
+        Commands::Recent { n, h } => {
+            output = playback_manager
+                .recent(n.unwrap_or(20), h.unwrap_or(false))
+                .await;
         }
 
         // Status Information
@@ -157,14 +167,6 @@ pub async fn run_cli(api_proxy: &mut ApiProxy) {
         }
         Commands::Filter { query, uris } => {
             // search_manager.filter(query, uris);
-        }
-
-        // Queue Management
-        Commands::Queue { uris } => {
-            // queue_manager.queue(uris);
-        }
-        Commands::Clear => {
-            // queue_manager.clear();
         }
     }
 

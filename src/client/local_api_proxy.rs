@@ -1,11 +1,12 @@
 // use once_cell::sync::OnceCell;
 use crate::server::web::server::start_server;
 use crate::util::errors::{self, return_response_code, ApiError};
-use log::{debug, error, info, warn};
+use log::{debug, error, info};
 use reqwest::{Client, StatusCode};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::env;
+use std::process::Command;
 use std::time::Duration;
 
 #[derive(Debug)]
@@ -121,6 +122,10 @@ impl ApiProxy {
             }
             info!("Client found server down, attempting to start it.");
             let _ = start_server(self.server_port, self.server_timeout).await;
+            // Command::new("sh")
+            //     .arg("start_server.sh")
+            //     .spawn()
+            //     .expect("Failed to start server script");
             // self.check_server(retry + 1).await?;
             return Ok(());
         }
@@ -130,7 +135,7 @@ impl ApiProxy {
     pub async fn get(
         &self,
         endpoint: &str,
-        params: Option<HashMap<&str, &str>>,
+        params: Option<HashMap<String, String>>,
     ) -> Result<(StatusCode, Value), ApiError> {
         // check if server is up, if not, start it
         // self.check_server(0).await?;
@@ -140,14 +145,15 @@ impl ApiProxy {
         }
 
         // construct and send request
-        let url = format!(
-            "{}/{}?client_id={}",
-            self.base_url,
-            endpoint,
-            self.client_id.unwrap()
+        let url = format!("{}/{}", self.base_url, endpoint,);
+
+        let mut q_params = params.clone().unwrap_or_default();
+        q_params.insert(
+            "client_id".to_string(),
+            self.client_id.clone().unwrap().to_string(),
         );
 
-        let request = self.client.get(&url).query(&params.unwrap_or_default());
+        let request = self.client.get(&url).query(&q_params);
 
         let response = match request.send().await {
             Ok(res) => res,
@@ -177,6 +183,7 @@ impl ApiProxy {
         &self,
         endpoint: &str,
         body: Option<Value>,
+        params: Option<HashMap<String, String>>,
     ) -> Result<(StatusCode, Value), ApiError> {
         // check if server is up, if not, start it
         // self.check_server(0).await?;
@@ -186,14 +193,19 @@ impl ApiProxy {
         }
 
         // construct and send request
-        let url = format!(
-            "{}/{}?client_id={}",
-            self.base_url,
-            endpoint,
-            self.client_id.unwrap()
+        let url = format!("{}/{}", self.base_url, endpoint);
+
+        let mut q_params = params.clone().unwrap_or_default();
+        q_params.insert(
+            "client_id".to_string(),
+            self.client_id.clone().unwrap().to_string(),
         );
 
-        let request = self.client.post(&url).json(&body.unwrap_or_default());
+        let request = self
+            .client
+            .post(&url)
+            .query(&q_params)
+            .json(&body.unwrap_or_default());
 
         let response = match request.send().await {
             Ok(res) => res,
@@ -223,6 +235,7 @@ impl ApiProxy {
         &self,
         endpoint: &str,
         body: Option<Value>,
+        params: Option<HashMap<String, String>>,
     ) -> Result<(StatusCode, Value), ApiError> {
         // check if server is up, if not, start it
         // self.check_server(0).await?;
@@ -232,14 +245,19 @@ impl ApiProxy {
         }
 
         // construct and send request
-        let url = format!(
-            "{}/{}?client_id={}",
-            self.base_url,
-            endpoint,
-            self.client_id.unwrap()
+        let url = format!("{}/{}", self.base_url, endpoint);
+
+        let mut q_params = params.clone().unwrap_or_default();
+        q_params.insert(
+            "client_id".to_string(),
+            self.client_id.clone().unwrap().to_string(),
         );
 
-        let request = self.client.put(&url).json(&body.unwrap_or_default());
+        let request = self
+            .client
+            .put(&url)
+            .query(&q_params)
+            .json(&body.unwrap_or_default());
 
         let response = match request.send().await {
             Ok(res) => res,
@@ -269,6 +287,7 @@ impl ApiProxy {
         &self,
         endpoint: &str,
         body: Option<Value>,
+        params: Option<HashMap<String, String>>,
     ) -> Result<(StatusCode, Value), ApiError> {
         // check if server is up, if not, start it
         // self.check_server(0).await?;
@@ -278,14 +297,19 @@ impl ApiProxy {
         }
 
         // construct and send request
-        let url = format!(
-            "{}/{}?client_id={}",
-            self.base_url,
-            endpoint,
-            self.client_id.unwrap()
+        let url = format!("{}/{}", self.base_url, endpoint);
+
+        let mut q_params = params.clone().unwrap_or_default();
+        q_params.insert(
+            "client_id".to_string(),
+            self.client_id.clone().unwrap().to_string(),
         );
 
-        let request = self.client.delete(&url).json(&body.unwrap_or_default());
+        let request = self
+            .client
+            .post(&url)
+            .query(&q_params)
+            .json(&body.unwrap_or_default());
 
         let response = match request.send().await {
             Ok(res) => res,
