@@ -277,11 +277,11 @@ pub fn routes(
     last_request_time: Arc<Mutex<Instant>>,
 ) -> impl Filter<Extract = impl Reply, Error = Rejection> + Clone {
     // Define the routes
-
     let json_fwd_get_routes = vec![
-        "api/spt-fwd/me/player",
         "api/spt-fwd/me/player/currently-playing",
         "api/spt-fwd/me/player/devices",
+        "api/spt-fwd/me/player/queue",
+        "api/spt-fwd/me/player/recently-played",
     ];
 
     let initial_route = construct_json_fwd_route(
@@ -303,6 +303,42 @@ pub fn routes(
             )
         })
         .fold(initial_route, |acc, route| acc.or(route).unify().boxed());
+
+    let json_fwd_put_routes = vec![
+        "api/spt-fwd/me/player/play",
+        "api/spt-fwd/me/player/pause",
+        "api/spt-fwd/me/player",
+    ];
+    let api_routes = json_fwd_put_routes
+        .iter()
+        .map(|route| {
+            construct_json_fwd_route(
+                RouteType::Put,
+                route,
+                Arc::clone(&api_proxies),
+                Arc::clone(&last_request_time),
+            )
+        })
+        .fold(api_routes, |acc, route| acc.or(route).unify().boxed());
+
+    let json_fwd_post_routes = vec![
+        "api/spt-fwd/me/player/next",
+        "api/spt-fwd/me/player/previous",
+        "api/spt-fwd/me/player/seek",
+        "api/spt-fwd/me/player/volume",
+        "api/spt-fwd/me/player/queue",
+    ];
+    let api_routes = json_fwd_post_routes
+        .iter()
+        .map(|route| {
+            construct_json_fwd_route(
+                RouteType::Post,
+                route,
+                Arc::clone(&api_proxies),
+                Arc::clone(&last_request_time),
+            )
+        })
+        .fold(api_routes, |acc, route| acc.or(route).unify().boxed());
 
     let ping_route = warp::path("ping").and(warp::path::end()).and_then({
         let last_request_time = Arc::clone(&last_request_time);

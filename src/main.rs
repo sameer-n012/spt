@@ -21,6 +21,8 @@ mod client {
     pub mod local_api_proxy;
     pub mod cli {
         pub mod cli_app;
+        pub mod eval;
+        pub mod parser;
     }
     pub mod core {
         pub mod playback_manager;
@@ -70,7 +72,8 @@ async fn main() {
         return;
     }
 
-    client::cli::cli_app::run_cli(&mut api_proxy).await;
+    let args = std::env::args().collect::<Vec<String>>();
+    client::cli::cli_app::run_cli(&mut api_proxy, args).await;
 
     info!("Stopping program.");
 }

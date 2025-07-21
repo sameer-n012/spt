@@ -360,9 +360,9 @@ impl<'a> PlaybackManager<'a> {
                     if !json["currently_playing"].is_null() {
                         q_list.push_str(&format!(
                             "\t{} - {} by {}\n",
-                            json["currently_playing"]["item"]["name"],
-                            json["currently_playing"]["item"]["album"]["name"],
-                            json["currently_playing"]["item"]["artists"][0]["name"]
+                            json["currently_playing"]["name"],
+                            json["currently_playing"]["album"]["name"],
+                            json["currently_playing"]["artists"][0]["name"]
                         ));
                     } else {
                         q_list.push_str("\tNone\n");
