@@ -472,7 +472,9 @@ impl<'a> PlaybackManager<'a> {
                     for item in json["items"].as_array().unwrap_or(&vec![]) {
                         q_list.push_str(&format!(
                             "\t{} - {} by {}\n",
-                            item["name"], item["album"]["name"], item["artists"][0]["name"]
+                            item["track"]["name"],
+                            item["track"]["album"]["name"],
+                            item["track"]["artists"][0]["name"]
                         ));
                     }
                     if json["items"].as_array().unwrap_or(&vec![]).len() == 0 {
