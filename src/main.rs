@@ -22,6 +22,7 @@ mod client {
     pub mod cli {
         pub mod cli_app;
         pub mod eval;
+        pub mod formatter;
         pub mod parser;
     }
     pub mod core {

@@ -1,3 +1,4 @@
+use crate::client::cli::formatter;
 use crate::client::local_api_proxy::ApiProxy;
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -28,16 +29,13 @@ impl<'a> PlaybackManager<'a> {
             let (status, json) = res.unwrap();
             if status.as_u16() == 200 {
                 if human_readable {
-                    return Some(format!(
-                        "{} - {} by {}.",
-                        json["item"]["name"],
-                        json["item"]["album"]["name"],
-                        json["item"]["artists"][0]["name"],
-                    ));
-                } else {
-                    if let Some(uri) = json["item"]["uri"].as_str() {
-                        return Some(uri.to_string() + "\n");
+                    if !json["item"].is_null() {
+                        return Some(formatter::print_track_episode_pretty(&json["item"], 0));
+                    } else {
+                        return Some("No track currently playing.".to_string());
                     }
+                } else {
+                    return Some(formatter::print_track_episode(&json["item"], 0));
                 }
             } else if status.as_u16() == 204 {
                 return Some("No track currently playing.".to_string());
@@ -63,10 +61,8 @@ impl<'a> PlaybackManager<'a> {
 
         if res.is_ok() {
             let (status, _) = res.unwrap();
-            if status.as_u16() == 200 {
+            if status.as_u16() == 200 || status.as_u16() == 204 {
                 return Some("Now Playing.".to_string());
-            } else if status.as_u16() == 204 {
-                return Some("No track currently playing.".to_string());
             } else if status.as_u16() == 401 || status.as_u16() == 403 {
                 return Some("User not authorized".to_string());
             } else if status.as_u16() == 429 {
@@ -89,10 +85,8 @@ impl<'a> PlaybackManager<'a> {
 
         if res.is_ok() {
             let (status, _) = res.unwrap();
-            if status.as_u16() == 200 {
+            if status.as_u16() == 200 || status.as_u16() == 204 {
                 return Some("Now Paused.".to_string());
-            } else if status.as_u16() == 204 {
-                return Some("No track currently playing.".to_string());
             } else if status.as_u16() == 401 || status.as_u16() == 403 {
                 return Some("User not authorized".to_string());
             } else if status.as_u16() == 429 {
@@ -221,7 +215,7 @@ impl<'a> PlaybackManager<'a> {
         if res.is_ok() {
             let (status, _) = res.unwrap();
             if status.as_u16() == 200 || status.as_u16() == 204 {
-                return Some(format!("Volume set to {}.", level));
+                return Some(format!("Volume set to {}%.", level));
             } else if status.as_u16() == 401 || status.as_u16() == 403 {
                 return Some("User not authorized".to_string());
             } else if status.as_u16() == 429 {
@@ -314,21 +308,29 @@ impl<'a> PlaybackManager<'a> {
             if status.as_u16() == 200 {
                 self.device_list.clear(); // Clear previous device list
 
-                let mut devices_list = String::from("Available Devices:\n");
+                let mut devices_list = String::new();
+                if human_readable {
+                    devices_list.push_str("Available Devices:\n");
+                    devices_list.push_str(&formatter::print_device_list_pretty(&json, 1));
+                } else {
+                    devices_list.push_str(&formatter::print_device_list(&json, 1));
+                }
+
                 if let Some(devices) = json["devices"].as_array() {
                     for device in devices {
                         if let (Some(name), Some(id)) =
                             (device["name"].as_str(), device["id"].as_str())
                         {
-                            if human_readable {
-                                devices_list.push_str(&format!("\t{} ({})\n", name, id));
-                            } else {
-                                devices_list.push_str(&format!("{}\n", id));
-                            }
+                            //     if human_readable {
+                            //         devices_list.push_str(&format!("\t{} ({})\n", name, id));
+                            //     } else {
+                            //         devices_list.push_str(&format!("{}\n", id));
+                            //     }
                             self.device_list.insert(name.to_string(), id.to_string());
                         }
                     }
                 }
+
                 return Some(devices_list);
             } else if status.as_u16() == 204 {
                 return Some("No devices found.".to_string());
@@ -358,32 +360,44 @@ impl<'a> PlaybackManager<'a> {
                 if human_readable {
                     q_list.push_str("Now Playing:\n");
                     if !json["currently_playing"].is_null() {
-                        q_list.push_str(&format!(
-                            "\t{} - {} by {}\n",
-                            json["currently_playing"]["name"],
-                            json["currently_playing"]["album"]["name"],
-                            json["currently_playing"]["artists"][0]["name"]
-                        ));
+                        // q_list.push_str(&format!(
+                        //     "\t{} - {} by {}\n",
+                        //     json["currently_playing"]["name"],
+                        //     json["currently_playing"]["album"]["name"],
+                        //     json["currently_playing"]["artists"][0]["name"]
+                        // ));
+                        q_list.push_str(&formatter::print_track_episode_pretty(
+                            &json["currently_playing"],
+                            1,
+                        ))
                     } else {
-                        q_list.push_str("\tNone\n");
+                        q_list.push_str("\tNone");
                     }
-                    q_list.push_str("Queue:\n");
-                    for item in json["queue"].as_array().unwrap_or(&vec![]) {
-                        q_list.push_str(&format!(
-                            "\t{} - {} by {}\n",
-                            item["name"], item["album"]["name"], item["artists"][0]["name"]
-                        ));
-                    }
+                    q_list.push_str("\nQueue:\n");
+                    q_list.push_str(&formatter::print_item_list_pretty(&json["queue"], 1));
+                    // for item in json["queue"].as_array().unwrap_or(&vec![]) {
+                    //     q_list.push_str(&format!(
+                    //         "\t{} - {} by {}\n",
+                    //         item["name"], item["album"]["name"], item["artists"][0]["name"]
+                    //     ));
+
+                    // }
                     if json["queue"].as_array().unwrap_or(&vec![]).len() == 0 {
                         q_list.push_str("\tNone\n");
                     }
                 } else {
                     if !json["currently_playing"].is_null() {
-                        q_list.push_str(&format!("{}\n", json["currently_playing"]["uri"]));
+                        // q_list.push_str(&format!("{}\n", json["currently_playing"]["uri"]));
+                        q_list.push_str(&formatter::print_track_episode(
+                            &json["currently_playing"],
+                            1,
+                        ));
+                        q_list.push_str("\n");
                     }
-                    for item in json["queue"].as_array().unwrap_or(&vec![]) {
-                        q_list.push_str(&format!("{}\n", item["uri"]));
-                    }
+                    q_list.push_str(&formatter::print_item_list(&json["queue"], 1));
+                    // for item in json["queue"].as_array().unwrap_or(&vec![]) {
+                    //     q_list.push_str(&format!("{}\n", item["uri"]));
+                    // }
                 }
 
                 return Some(q_list);
@@ -469,21 +483,23 @@ impl<'a> PlaybackManager<'a> {
 
                 if human_readable {
                     q_list.push_str("Recently Played:\n");
-                    for item in json["items"].as_array().unwrap_or(&vec![]) {
-                        q_list.push_str(&format!(
-                            "\t{} - {} by {}\n",
-                            item["track"]["name"],
-                            item["track"]["album"]["name"],
-                            item["track"]["artists"][0]["name"]
-                        ));
-                    }
-                    if json["items"].as_array().unwrap_or(&vec![]).len() == 0 {
-                        q_list.push_str("\tNone\n");
-                    }
+                    // for item in json["items"].as_array().unwrap_or(&vec![]) {
+                    //     q_list.push_str(&format!(
+                    //         "\t{} - {} by {}\n",
+                    //         item["track"]["name"],
+                    //         item["track"]["album"]["name"],
+                    //         item["track"]["artists"][0]["name"]
+                    //     ));
+                    // }
+                    // if json["items"].as_array().unwrap_or(&vec![]).len() == 0 {
+                    //     q_list.push_str("\tNone\n");
+                    // }
+                    q_list.push_str(&formatter::print_item_list_pretty(&json, 1));
                 } else {
-                    for item in json["queue"].as_array().unwrap_or(&vec![]) {
-                        q_list.push_str(&format!("{}\n", item["uri"]));
-                    }
+                    // for item in json["items"].as_array().unwrap_or(&vec![]) {
+                    //     q_list.push_str(&format!("{}\n", item["track"]["uri"]));
+                    // }
+                    q_list.push_str(&formatter::print_item_list(&json, 1));
                 }
 
                 return Some(q_list);
