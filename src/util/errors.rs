@@ -83,3 +83,9 @@ pub fn return_error_message(e: &ApiError) -> String {
         ApiError::ResponseError504 => "Gateway timeout".to_string(),
     }
 }
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub enum DBError {
+    ConnectionError,
+    SetupError,
+}

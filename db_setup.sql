@@ -55,6 +55,7 @@ CREATE TABLE IF NOT EXISTS tracks (
     valence REAL,
     time_signature INTEGER, -- ranges from 3 to 7?
     pitch_class_key INTEGER, -- 0-11
+    score REAL, -- score heuristic
     FOREIGN KEY (album_uri) REFERENCES albums (uri)
 );
 
@@ -67,6 +68,7 @@ CREATE TABLE IF NOT EXISTS episodes (
     description TEXT,
     duration_ms INTEGER NOT NULL,
     explicit BOOLEAN NOT NULL DEFAULT FALSE,
+    score REAL, -- score heuristic
     FOREIGN KEY (show_uri) REFERENCES shows (uri)
 );
 

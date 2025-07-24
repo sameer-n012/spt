@@ -10,6 +10,9 @@ mod server {
         pub mod server;
         pub mod spt_api_proxy;
     }
+    pub mod db {
+        pub mod db_manager;
+    }
 }
 
 mod util {
