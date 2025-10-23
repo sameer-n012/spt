@@ -39,3 +39,8 @@
   - [ ] Album
   - [ ] Playlist
   - [ ] Track Analysis
+
+  ### Notes
+  - [Launch Daemons Documentation](https://developer.apple.com/library/archive/documentation/MacOSX/Conceptual/BPSystemStartup/Chapters/CreatingLaunchdJobs.html)
+  - [Launch Daemons Examples](https://github.com/tjluoma/launchd-keepalive)
+  - [Spotify API Documentation](https://developer.spotify.com/documentation/web-api/)

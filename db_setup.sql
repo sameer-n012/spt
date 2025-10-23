@@ -37,7 +37,6 @@ CREATE TABLE IF NOT EXISTS playlists (
 CREATE TABLE IF NOT EXISTS tracks (
     uri TEXT PRIMARY KEY,
     name TEXT NOT NULL,
-    artist_uri TEXT NOT NULL, -- comma separated list of artist URIs
     album_uri TEXT NOT NULL,
     track_number INTEGER NOT NULL,
     disc_number INTEGER NOT NULL,
@@ -55,8 +54,15 @@ CREATE TABLE IF NOT EXISTS tracks (
     valence REAL,
     time_signature INTEGER, -- ranges from 3 to 7?
     pitch_class_key INTEGER, -- 0-11
-    score REAL, -- score heuristic
     FOREIGN KEY (album_uri) REFERENCES albums (uri)
+);
+
+CREATE TABLE IF NOT EXISTS track_artists (
+    track_uri TEXT NOT NULL,
+    artist_uri TEXT NOT NULL,
+    PRIMARY KEY (track_uri, artist_uri),
+    FOREIGN KEY (track_uri) REFERENCES tracks (uri),
+    FOREIGN KEY (artist_uri) REFERENCES artists (uri)
 );
 
 CREATE TABLE IF NOT EXISTS episodes (
@@ -68,7 +74,6 @@ CREATE TABLE IF NOT EXISTS episodes (
     description TEXT,
     duration_ms INTEGER NOT NULL,
     explicit BOOLEAN NOT NULL DEFAULT FALSE,
-    score REAL, -- score heuristic
     FOREIGN KEY (show_uri) REFERENCES shows (uri)
 );
 
@@ -83,4 +88,26 @@ CREATE TABLE IF NOT EXISTS playlist_contents (
     FOREIGN KEY (playlist_uri) REFERENCES playlists (uri),
     FOREIGN KEY (track_uri) REFERENCES tracks (uri),
     FOREIGN KEY (episode_uri) REFERENCES episodes (uri)
+);
+
+CREATE TABLE IF NOT EXISTS user_track_episode_analytics (
+    user_id TEXT PRIMARY KEY,
+    track_uri TEXT,
+    episode_uri TEXT,
+    -- score REAL, -- score heuristic
+    play_count INTEGER DEFAULT 0,
+    skip_count INTEGER DEFAULT 0,
+    replay_count INTEGER DEFAULT 0,
+    last_played TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES users (user_id),
+    FOREIGN KEY (track_uri) REFERENCES tracks (uri),
+    FOREIGN KEY (episode_uri) REFERENCES episodes (uri),
+);
+
+CREATE TABLE IF NOT EXISTS play_history (
+    user_id TEXT NOT NULL,
+    item_uri TEXT NOT NULL,
+    updated_at TIMESTAMP NOT NULL,
+    position INTEGER NOT NULL, -- position in ms
+    PRIMARY KEY (user_id, item_uri, timestamp),
 )

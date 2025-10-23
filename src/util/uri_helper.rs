@@ -4,6 +4,8 @@ pub enum UriType {
     Album,
     Artist,
     Playlist,
+    Episode,
+    Show,
     Unknown,
 }
 

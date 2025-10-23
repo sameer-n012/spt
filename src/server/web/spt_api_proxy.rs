@@ -9,7 +9,9 @@ use std::collections::HashMap;
 use std::env;
 use std::iter;
 use std::sync::Arc;
+use std::time::Instant;
 use std::time::{Duration, SystemTime};
+use tokio::sync::Mutex;
 use tokio::sync::{Notify, RwLock};
 use url::Url;
 
@@ -36,6 +38,8 @@ pub struct ApiProxy {
     user_client_id: u64, // unique client id for each user, each user gets their own ApiProxy
     auth_info: RwLock<AuthInfo>,
     pub cb_auth_notifier: Arc<Notify>,
+
+    last_request_time: Arc<Mutex<Instant>>,
 }
 
 impl ApiProxy {
@@ -66,6 +70,7 @@ impl ApiProxy {
                 cb_auth_code: None,
             }),
             cb_auth_notifier: Arc::new(Notify::new()),
+            last_request_time: Arc::new(Mutex::new(Instant::now())),
         };
     }
 
@@ -778,6 +783,11 @@ impl ApiProxy {
             }
             _ => Err(errors::return_response_error(status)),
         }
+    }
+
+    async fn update_last_request_time(last_request_time: &Arc<Mutex<Instant>>) {
+        let mut last_time = last_request_time.lock().await;
+        *last_time = Instant::now();
     }
 
     // Example method to get devices (for demonstration purposes)

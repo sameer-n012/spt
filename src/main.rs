@@ -15,6 +15,16 @@ mod server {
     }
 }
 
+mod models {
+    pub mod album;
+    pub mod artist;
+    pub mod episode;
+    pub mod playlist;
+    pub mod show;
+    pub mod track;
+    pub mod user;
+}
+
 mod util {
     pub mod errors;
     pub mod uri_helper;

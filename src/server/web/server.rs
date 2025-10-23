@@ -9,6 +9,7 @@ use tokio::sync::{Mutex, RwLock};
 // use tokio::sync::oneshot;
 use tokio::time;
 
+use crate::server::db::db_manager::DBManager;
 use crate::server::web::routes;
 use crate::server::web::spt_api_proxy::ApiProxy;
 
@@ -16,11 +17,10 @@ use crate::server::web::spt_api_proxy::ApiProxy;
 pub struct ServerMeta {
     pub port: u16,
     pub inactivity_timeout: Duration,
-    // pub db_url: String,
-    // pub db_port: u16,
+    pub db_manager: Arc<DBManager>,
     pub api_proxies: Arc<RwLock<HashMap<u64, Arc<ApiProxy>>>>,
     pub next_client_id: Arc<Mutex<u64>>,
-    pub last_request_time: Arc<Mutex<Instant>>,
+    // pub last_request_time: Arc<Mutex<Instant>>,
 }
 
 pub async fn start_server(
@@ -30,18 +30,23 @@ pub async fn start_server(
     // Shared state to track the last request time
     let last_request_time = Arc::new(Mutex::new(Instant::now()));
     // let last_request_time_clone = Arc::clone(&last_request_time);
+    //
+    let db_url = env::var("SPT_DB_URL").unwrap_or("".to_string());
+    let db_port: u16 = env::var("SPT_DB_PORT")
+        .unwrap_or("0".to_string())
+        .parse()
+        .unwrap_or(0);
+
+    let mut db_manager = DBManager::new(db_url, db_port);
+    db_manager.setup();
 
     let server_meta = ServerMeta {
         port,
         inactivity_timeout,
-        // db_url: env::var("DB_URL").expect("DB_URL must be set"),
-        // db_port: env::var("DB_PORT")
-        //     .expect("DB_PORT must be set")
-        //     .parse::<u16>()
-        //     .unwrap(),
+        db_manager: Arc::new(db_manager),
         api_proxies: Arc::new(RwLock::new(HashMap::new())),
         next_client_id: Arc::new(Mutex::new(1)),
-        last_request_time: last_request_time,
+        // last_request_time: last_request_time,
     };
 
     // Shutdown signal - TODO delete
@@ -49,8 +54,9 @@ pub async fn start_server(
 
     let routes = routes::routes(
         Arc::clone(&server_meta.api_proxies),
+        Arc::clone(&server_meta.db_manager),
         Arc::clone(&server_meta.next_client_id),
-        Arc::clone(&server_meta.last_request_time),
+        // Arc::clone(&server_meta.last_request_time),
     );
 
     // Start the server with graceful shutdown
@@ -59,12 +65,18 @@ pub async fn start_server(
         addr,
         handle_shutdown(
             // shutdown_rx,
-            Arc::clone(&server_meta.last_request_time),
+            // Arc::clone(&server_meta.last_request_time),
             server_meta.inactivity_timeout.clone(),
         ),
     );
 
     tokio::spawn(server);
+    tokio::spawn(check_periodic_update(
+        // Arc::clone(&server_meta.last_request_time),
+        Arc::clone(&server_meta.api_proxies),
+        Arc::clone(&server_meta.db_manager),
+        Duration::from_secs(10),
+    ));
 
     env::set_var("SPT_RUST_APP_SERVER_RUNNING", "1"); // TODO delete (unsafe)
 
@@ -94,6 +106,59 @@ async fn handle_shutdown(
         // }
         _ = check_inactive(last_request_time, inactivity_timeout) => {
             info!("Server shut down due to inactivity after {}s.", inactivity_timeout.as_secs());
+        }
+    }
+}
+
+// call now-playing status update function every 10s
+async fn check_periodic_update(
+    last_request_time: Arc<Mutex<Instant>>,
+    api_proxies: Arc<RwLock<HashMap<u64, Arc<ApiProxy>>>>,
+    db_manager: Arc<DBManager>,
+    update_interval: Duration,
+) {
+    let mut interval = time::interval(update_interval);
+    loop {
+        interval.tick().await;
+        periodic_update(
+            Arc::clone(&last_request_time),
+            Arc::clone(&api_proxies),
+            Arc::clone(&db_manager),
+        )
+        .await;
+    }
+}
+
+async fn periodic_update(
+    last_request_time: Arc<Mutex<Instant>>,
+    api_proxies: Arc<RwLock<HashMap<u64, Arc<ApiProxy>>>>,
+    db_manager: Arc<DBManager>,
+) {
+    // update last request time
+    let mut last_time = last_request_time.lock().await;
+    *last_time = Instant::now();
+
+    let proxies = api_proxies.read().await;
+    for (_id, proxy) in proxies.iter() {
+        // info!("Checking now-playing status for client {}", _id);
+        let res = proxy.get("me/player/currently-playing", None).await;
+        if let Ok((status, json)) = res {
+            if status != 200 {
+                continue;
+            }
+            if let Some(item) = json.get("item") {
+                if let Some(uri) = item.get("uri").and_then(|u| u.as_str()) {
+                    if let Some(user_id) = item.get("user_id").and_then(|u| u.as_str()) {
+                        let position = json
+                            .get("progress_ms")
+                            .and_then(|p| p.as_u64())
+                            .unwrap_or(0) as i64;
+                        let _ = db_manager
+                            .update_now_playing(user_id, uri, position)
+                            .await?;
+                    }
+                }
+            }
         }
     }
 }
