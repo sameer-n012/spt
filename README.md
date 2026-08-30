@@ -34,7 +34,7 @@
   - [ ] Artist Database
   - [ ] Album Database
   - [ ] Playlist Database
-- [ ] Track Filtering
+- [ ] Track Filtering (SQL-like queries)
   - [ ] Artist
   - [ ] Album
   - [ ] Playlist

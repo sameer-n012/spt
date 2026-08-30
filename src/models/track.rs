@@ -1,5 +1,4 @@
-use datetime::LocalDateTime;
-use serde_json::Value;
+use crate::util::errors::DataParseError;
 use sqlx::query::Query;
 
 #[derive(Debug, Clone)]
@@ -53,31 +52,31 @@ impl Track {
         track_record: serde_json::Value,
         track_analytics_record: Option<serde_json::Value>,
     ) -> Result<Track, DataParseError> {
-        let t = Track {
+        let mut t = Track {
             uri: track_record["uri"]
                 .as_str()
-                .ok_or(DataParseError::new("uri"))?
+                .ok_or(DataParseError::FieldMissingError)?
                 .to_string(),
             name: track_record["name"]
                 .as_str()
-                .ok_or(DataParseError::new("name"))?
+                .ok_or(DataParseError::FieldMissingError)?
                 .to_string(),
             album_uri: track_record["album_uri"]
                 .as_str()
-                .ok_or(DataParseError::new("album_uri"))?
+                .ok_or(DataParseError::FieldMissingError)?
                 .to_string(),
             track_number: track_record["track_number"]
                 .as_i64()
-                .ok_or(DataParseError::new("track_number"))? as i32,
+                .ok_or(DataParseError::FieldMissingError)? as i32,
             disc_number: track_record["disc_number"]
                 .as_i64()
-                .ok_or(DataParseError::new("disc_number"))? as i32,
+                .ok_or(DataParseError::FieldMissingError)? as i32,
             duration_ms: track_record["duration_ms"]
                 .as_i64()
-                .ok_or(DataParseError::new("duration_ms"))? as i32,
+                .ok_or(DataParseError::FieldMissingError)? as i32,
             explicit: track_record["explicit"]
                 .as_bool()
-                .ok_or(DataParseError::new("explicit"))?,
+                .ok_or(DataParseError::FieldMissingError)?,
             analytics: None,
             user_analytics: None,
         };
@@ -101,18 +100,17 @@ impl Track {
             Some(TrackUserAnalytics {
                 user_id: ta_record["user_id"]
                     .as_str()
-                    .ok_or(DataParseError::new("user_id"))?
+                    .ok_or(DataParseError::FieldMissingError)?
                     .to_string(),
                 play_count: ta_record["play_count"]
                     .as_i64()
-                    .ok_or(DataParseError::new("play_count"))? as i32,
+                    .ok_or(DataParseError::FieldMissingError)? as i32,
                 skip_count: ta_record["skip_count"]
                     .as_i64()
-                    .ok_or(DataParseError::new("skip_count"))? as i32,
+                    .ok_or(DataParseError::FieldMissingError)? as i32,
                 replay_count: ta_record["replay_count"]
                     .as_i64()
-                    .ok_or(DataParseError::new("replay_count"))?
-                    as i32,
+                    .ok_or(DataParseError::FieldMissingError)? as i32,
                 last_played: ta_record["last_played"].as_str().map(|s| s.to_string()),
             })
         } else {
@@ -126,31 +124,31 @@ impl Track {
         track_record: serde_json::Value,
         track_analytics_record: Option<serde_json::Value>,
     ) -> Result<Track, DataParseError> {
-        let t = Track {
+        let mut t = Track {
             uri: track_record["uri"]
                 .as_str()
-                .ok_or(DataParseError::new("uri"))?
+                .ok_or(DataParseError::FieldMissingError)?
                 .to_string(),
             name: track_record["name"]
                 .as_str()
-                .ok_or(DataParseError::new("name"))?
+                .ok_or(DataParseError::FieldMissingError)?
                 .to_string(),
             album_uri: track_record["album_uri"]
                 .as_str()
-                .ok_or(DataParseError::new("album_uri"))?
+                .ok_or(DataParseError::FieldMissingError)?
                 .to_string(),
             track_number: track_record["track_number"]
                 .as_i64()
-                .ok_or(DataParseError::new("track_number"))? as i32,
+                .ok_or(DataParseError::FieldMissingError)? as i32,
             disc_number: track_record["disc_number"]
                 .as_i64()
-                .ok_or(DataParseError::new("disc_number"))? as i32,
+                .ok_or(DataParseError::FieldMissingError)? as i32,
             duration_ms: track_record["duration_ms"]
                 .as_i64()
-                .ok_or(DataParseError::new("duration_ms"))? as i32,
+                .ok_or(DataParseError::FieldMissingError)? as i32,
             explicit: track_record["explicit"]
                 .as_bool()
-                .ok_or(DataParseError::new("explicit"))?,
+                .ok_or(DataParseError::FieldMissingError)?,
             analytics: None,
             user_analytics: None,
         };
@@ -174,18 +172,17 @@ impl Track {
             Some(TrackUserAnalytics {
                 user_id: ta_record["user_id"]
                     .as_str()
-                    .ok_or(DataParseError::new("user_id"))?
+                    .ok_or(DataParseError::FieldMissingError)?
                     .to_string(),
                 play_count: ta_record["play_count"]
                     .as_i64()
-                    .ok_or(DataParseError::new("play_count"))? as i32,
+                    .ok_or(DataParseError::FieldMissingError)? as i32,
                 skip_count: ta_record["skip_count"]
                     .as_i64()
-                    .ok_or(DataParseError::new("skip_count"))? as i32,
+                    .ok_or(DataParseError::FieldMissingError)? as i32,
                 replay_count: ta_record["replay_count"]
                     .as_i64()
-                    .ok_or(DataParseError::new("replay_count"))?
-                    as i32,
+                    .ok_or(DataParseError::FieldMissingError)? as i32,
                 last_played: ta_record["last_played"].as_str().map(|s| s.to_string()),
             })
         } else {
@@ -240,7 +237,9 @@ impl Track {
         })
     }
 
-    pub fn generate_insert_query(&self) -> Query {
+    pub fn generate_insert_query<'q>(
+        &'q self,
+    ) -> Query<'q, sqlx::Sqlite, sqlx::sqlite::SqliteArguments<'q>> {
         let query_str = "INSERT INTO tracks (uri, name, album_uri, track_number, disc_number, \
             duration_ms, explicit, popularity, acousticness, danceability, energy, instrumentalness, \
             liveness, loudness, speechiness, tempo, valence, time_signature, pitch_class_key) \
@@ -275,7 +274,9 @@ impl Track {
         return query;
     }
 
-    pub fn generate_update_query(&self) -> Query {
+    pub fn generate_update_query<'q>(
+        &'q self,
+    ) -> Query<'q, sqlx::Sqlite, sqlx::sqlite::SqliteArguments<'q>> {
         let query_str = "UPDATE tracks SET name = ?, album_uri = ?, track_number = ?, disc_number = ?, \
             duration_ms = ?, explicit = ?, popularity = ?, acousticness = ?, danceability = ?, energy = ?, \
             instrumentalness = ?, liveness = ?, loudness = ?, speechiness = ?, tempo = ?, valence = ?, \
@@ -311,14 +312,19 @@ impl Track {
         return query;
     }
 
-    pub fn generate_delete_query(&self) -> Query {
+    pub fn generate_delete_query<'q>(
+        &'q self,
+    ) -> Query<'q, sqlx::Sqlite, sqlx::sqlite::SqliteArguments<'q>> {
         let query_str = "DELETE FROM tracks WHERE uri = ?";
         let mut query = sqlx::query(query_str);
         query = query.bind(&self.uri);
         return query;
     }
 
-    pub fn generate_user_analytics_insert_query(&self, user_id: &str) -> Option<Query> {
+    pub fn generate_user_analytics_insert_query<'q>(
+        &'q self,
+        user_id: &'q str,
+    ) -> Option<Query<'q, sqlx::Sqlite, sqlx::sqlite::SqliteArguments<'q>>> {
         if let Some(ua) = &self.user_analytics {
             let query_str = "INSERT INTO track_user_analytics (user_id, track_uri, play_count, \
                 skip_count, replay_count, last_played) VALUES (?, ?, ?, ?, ?, ?)";
@@ -335,7 +341,10 @@ impl Track {
         return None;
     }
 
-    pub fn generate_user_analytics_update_query(&self, user_id: &str) -> Option<Query> {
+    pub fn generate_user_analytics_update_query<'q>(
+        &'q self,
+        user_id: &'q str,
+    ) -> Option<Query<'q, sqlx::Sqlite, sqlx::sqlite::SqliteArguments<'q>>> {
         if let Some(ua) = &self.user_analytics {
             let query_str = "UPDATE track_user_analytics SET play_count = ?, skip_count = ?, \
                 replay_count = ?, last_played = ? WHERE user_id = ? AND track_uri = ?";
@@ -352,7 +361,9 @@ impl Track {
         return None;
     }
 
-    pub fn generate_user_analytics_delete_query(&self) -> Option<Query> {
+    pub fn generate_user_analytics_delete_query(
+        &self,
+    ) -> Query<'_, sqlx::Sqlite, sqlx::sqlite::SqliteArguments<'_>> {
         let query_str = "DELETE FROM track_user_analytics WHERE uri = ?";
         let mut query = sqlx::query(query_str);
         query = query.bind(&self.uri);

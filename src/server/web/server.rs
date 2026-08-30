@@ -20,7 +20,8 @@ pub struct ServerMeta {
     pub db_manager: Arc<DBManager>,
     pub api_proxies: Arc<RwLock<HashMap<u64, Arc<ApiProxy>>>>,
     pub next_client_id: Arc<Mutex<u64>>,
-    // pub last_request_time: Arc<Mutex<Instant>>,
+    pub last_request_time: Arc<Mutex<Instant>>,
+    pub client_last_activity: Arc<Mutex<HashMap<u64, Instant>>>,
 }
 
 pub async fn start_server(
@@ -29,8 +30,8 @@ pub async fn start_server(
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // Shared state to track the last request time
     let last_request_time = Arc::new(Mutex::new(Instant::now()));
-    // let last_request_time_clone = Arc::clone(&last_request_time);
-    //
+    let client_last_activity = Arc::new(Mutex::new(HashMap::new()));
+
     let db_url = env::var("SPT_DB_URL").unwrap_or("".to_string());
     let db_port: u16 = env::var("SPT_DB_PORT")
         .unwrap_or("0".to_string())
@@ -38,7 +39,7 @@ pub async fn start_server(
         .unwrap_or(0);
 
     let mut db_manager = DBManager::new(db_url, db_port);
-    db_manager.setup();
+    db_manager.setup().await?;
 
     let server_meta = ServerMeta {
         port,
@@ -46,7 +47,8 @@ pub async fn start_server(
         db_manager: Arc::new(db_manager),
         api_proxies: Arc::new(RwLock::new(HashMap::new())),
         next_client_id: Arc::new(Mutex::new(1)),
-        // last_request_time: last_request_time,
+        last_request_time: last_request_time,
+        client_last_activity: Arc::clone(&client_last_activity),
     };
 
     // Shutdown signal - TODO delete
@@ -56,7 +58,8 @@ pub async fn start_server(
         Arc::clone(&server_meta.api_proxies),
         Arc::clone(&server_meta.db_manager),
         Arc::clone(&server_meta.next_client_id),
-        // Arc::clone(&server_meta.last_request_time),
+        Arc::clone(&server_meta.last_request_time),
+        Arc::clone(&server_meta.client_last_activity),
     );
 
     // Start the server with graceful shutdown
@@ -65,22 +68,25 @@ pub async fn start_server(
         addr,
         handle_shutdown(
             // shutdown_rx,
-            // Arc::clone(&server_meta.last_request_time),
+            Arc::clone(&server_meta.last_request_time),
             server_meta.inactivity_timeout.clone(),
         ),
     );
 
-    tokio::spawn(server);
+    // tokio::spawn(server);
     tokio::spawn(check_periodic_update(
-        // Arc::clone(&server_meta.last_request_time),
         Arc::clone(&server_meta.api_proxies),
         Arc::clone(&server_meta.db_manager),
+        Arc::clone(&server_meta.client_last_activity),
+        server_meta.inactivity_timeout.clone(),
         Duration::from_secs(10),
     ));
 
     env::set_var("SPT_RUST_APP_SERVER_RUNNING", "1"); // TODO delete (unsafe)
 
     info!("Server running at http://{}/.", addr);
+
+    server.await;
 
     Ok(())
 }
@@ -112,31 +118,47 @@ async fn handle_shutdown(
 
 // call now-playing status update function every 10s
 async fn check_periodic_update(
-    last_request_time: Arc<Mutex<Instant>>,
     api_proxies: Arc<RwLock<HashMap<u64, Arc<ApiProxy>>>>,
     db_manager: Arc<DBManager>,
+    client_last_activity: Arc<Mutex<HashMap<u64, Instant>>>,
+    inactivity_timeout: Duration,
     update_interval: Duration,
 ) {
     let mut interval = time::interval(update_interval);
     loop {
         interval.tick().await;
-        periodic_update(
-            Arc::clone(&last_request_time),
-            Arc::clone(&api_proxies),
-            Arc::clone(&db_manager),
-        )
-        .await;
+        periodic_update(Arc::clone(&api_proxies), Arc::clone(&db_manager)).await;
+
+        // Remove inactive clients
+        let now = Instant::now();
+        let mut last_activity = client_last_activity.lock().await;
+        let mut proxies = api_proxies.write().await;
+        let inactive_ids: Vec<u64> = last_activity
+            .iter()
+            .filter_map(|(id, last)| {
+                if now.duration_since(*last) > inactivity_timeout {
+                    Some(*id)
+                } else {
+                    None
+                }
+            })
+            .collect();
+        for id in inactive_ids {
+            proxies.remove(&id);
+            last_activity.remove(&id);
+            info!("Removed inactive client_id {} due to inactivity.", id);
+        }
     }
 }
 
 async fn periodic_update(
-    last_request_time: Arc<Mutex<Instant>>,
+    // last_request_time: Arc<Mutex<Instant>>,
     api_proxies: Arc<RwLock<HashMap<u64, Arc<ApiProxy>>>>,
     db_manager: Arc<DBManager>,
 ) {
     // update last request time
-    let mut last_time = last_request_time.lock().await;
-    *last_time = Instant::now();
+    // let mut last_time = last_request_time.lock().await;
+    // *last_time = Instant::now();
 
     let proxies = api_proxies.read().await;
     for (_id, proxy) in proxies.iter() {
@@ -153,9 +175,7 @@ async fn periodic_update(
                             .get("progress_ms")
                             .and_then(|p| p.as_u64())
                             .unwrap_or(0) as i64;
-                        let _ = db_manager
-                            .update_now_playing(user_id, uri, position)
-                            .await?;
+                        let _ = db_manager.update_now_playing(user_id, uri, position).await;
                     }
                 }
             }

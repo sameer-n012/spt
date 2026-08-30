@@ -1,4 +1,5 @@
 use reqwest::StatusCode;
+use std::error::Error;
 use std::fmt::Display;
 
 #[derive(Debug, Clone, Eq, PartialEq)]
@@ -84,8 +85,48 @@ pub fn return_error_message(e: &ApiError) -> String {
     }
 }
 
+impl Error for ApiError {}
+
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub enum DBError {
+    InvalidURI,
     ConnectionError,
     SetupError,
+    QueryError,
+}
+
+impl Display for DBError {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        write!(f, "{}", return_db_error_message(self))
+    }
+}
+
+pub fn return_db_error_message(e: &DBError) -> String {
+    match e {
+        DBError::InvalidURI => "Invalid database URI".to_string(),
+        DBError::ConnectionError => "Database connection error".to_string(),
+        DBError::SetupError => "Database setup error".to_string(),
+        DBError::QueryError => "The database query is invalid".to_string(),
+    }
+}
+
+impl Error for DBError {}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub enum DataParseError {
+    FieldMissingError,
+    InvalidDataError,
+}
+
+impl Display for DataParseError {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        write!(f, "{}", return_data_parse_error_message(self))
+    }
+}
+
+pub fn return_data_parse_error_message(e: &DataParseError) -> String {
+    match e {
+        DataParseError::FieldMissingError => "Required field is missing".to_string(),
+        DataParseError::InvalidDataError => "Data is invalid or malformed".to_string(),
+    }
 }

@@ -18,6 +18,10 @@ pub fn get_uri_type(uri: &str) -> UriType {
         return UriType::Artist;
     } else if uri.starts_with("spotify:playlist") {
         return UriType::Playlist;
+    } else if uri.starts_with("spotify:episode") {
+        return UriType::Episode;
+    } else if uri.starts_with("spotify:show") {
+        return UriType::Show;
     } else {
         return UriType::Unknown;
     }

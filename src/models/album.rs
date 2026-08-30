@@ -1,4 +1,4 @@
-use serde_json::Value;
+use crate::util::errors::DataParseError;
 use sqlx::query::Query;
 
 #[derive(Debug, Clone)]
@@ -22,19 +22,19 @@ impl Album {
         Ok(Album {
             uri: album_record["uri"]
                 .as_str()
-                .ok_or(DataParseError::new("uri"))?
+                .ok_or(DataParseError::FieldMissingError)?
                 .to_string(),
             name: album_record["name"]
                 .as_str()
-                .ok_or(DataParseError::new("name"))?
+                .ok_or(DataParseError::FieldMissingError)?
                 .to_string(),
             album_type: album_record["type"]
                 .as_str()
-                .ok_or(DataParseError::new("type"))?
+                .ok_or(DataParseError::FieldMissingError)?
                 .to_string(),
             release_date: album_record["release_date"]
                 .as_str()
-                .ok_or(DataParseError::new("release_date"))?
+                .ok_or(DataParseError::FieldMissingError)?
                 .to_string(),
         })
     }
@@ -53,7 +53,9 @@ impl Album {
         })
     }
 
-    pub fn generate_insert_query(&self) -> Query {
+    pub fn generate_insert_query(
+        &self,
+    ) -> Query<'_, sqlx::Sqlite, sqlx::sqlite::SqliteArguments<'_>> {
         let query_str = "INSERT INTO albums (uri, name, type, release_date) VALUES (?, ?, ?, ?)";
         let mut query = sqlx::query(query_str);
         query = query.bind(&self.uri);
@@ -63,7 +65,9 @@ impl Album {
         query
     }
 
-    pub fn generate_update_query(&self) -> Query {
+    pub fn generate_update_query(
+        &self,
+    ) -> Query<'_, sqlx::Sqlite, sqlx::sqlite::SqliteArguments<'_>> {
         let query_str = "UPDATE albums SET name = ?, type = ?, release_date = ? WHERE uri = ?";
         let mut query = sqlx::query(query_str);
         query = query.bind(&self.name);
@@ -73,7 +77,9 @@ impl Album {
         query
     }
 
-    pub fn generate_delete_query(&self) -> Query {
+    pub fn generate_delete_query(
+        &self,
+    ) -> Query<'_, sqlx::Sqlite, sqlx::sqlite::SqliteArguments<'_>> {
         let query_str = "DELETE FROM albums WHERE uri = ?";
         let mut query = sqlx::query(query_str);
         query = query.bind(&self.uri);

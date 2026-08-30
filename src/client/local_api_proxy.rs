@@ -21,18 +21,18 @@ pub struct ApiProxy {
 
 impl ApiProxy {
     pub fn new() -> Self {
-        let base_url = env::var("SERVER_BASE_URL").expect("SERVER_BASE_URL must be set");
-        let max_server_retries = env::var("MAX_SERVER_RETRIES")
-            .expect("MAX_SERVER_RETRIES must be set")
+        let base_url = env::var("SPT_SERVER_BASE_URL").expect("SPT_SERVER_BASE_URL must be set");
+        let max_server_retries = env::var("SPT_MAX_SERVER_RETRIES")
+            .expect("SPT_MAX_SERVER_RETRIES must be set")
             .parse::<u8>()
             .unwrap();
-        let server_port = env::var("SERVER_PORT")
-            .expect("SERVER_PORT must be set")
+        let server_port = env::var("SPT_SERVER_PORT")
+            .expect("SPT_SERVER_PORT must be set")
             .parse::<u16>()
             .unwrap();
         let server_timeout = Duration::from_secs(
-            env::var("SERVER_TIMEOUT_SECONDS")
-                .expect("SERVER_TIMEOUT_SECONDS must be set")
+            env::var("SPT_SERVER_TIMEOUT_SECONDS")
+                .expect("SPT_SERVER_TIMEOUT_SECONDS must be set")
                 .parse::<u64>()
                 .unwrap(),
         );
@@ -118,16 +118,16 @@ impl ApiProxy {
             return Ok(());
         } else {
             if retry >= self.max_server_retries {
-                return Err(ApiError::InternalServerError);
+                return Err(ApiError::ResponseError503);
             }
-            info!("Client found server down, attempting to start it.");
-            let _ = start_server(self.server_port, self.server_timeout).await;
+            info!("Client found server down.");
+            // let _ = start_server(self.server_port, self.server_timeout).await;
             // Command::new("sh")
             //     .arg("start_server.sh")
             //     .spawn()
             //     .expect("Failed to start server script");
             // self.check_server(retry + 1).await?;
-            return Ok(());
+            return Err(ApiError::ResponseError503);
         }
     }
 
@@ -307,7 +307,7 @@ impl ApiProxy {
 
         let request = self
             .client
-            .post(&url)
+            .delete(&url)
             .query(&q_params)
             .json(&body.unwrap_or_default());
 

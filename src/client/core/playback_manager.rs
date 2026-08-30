@@ -419,8 +419,8 @@ impl<'a> PlaybackManager<'a> {
         let n = uris.len();
         let mut results = Vec::with_capacity(n);
 
-        for _ in 0..n {
-            let params = HashMap::from([("uris".to_string(), uris[n].clone())]);
+        for i in 0..n {
+            let params = HashMap::from([("uris".to_string(), uris[i].clone())]);
             let res = self
                 .api_manager
                 .post("api/spt-fwd/me/player/queue", None, Some(params))

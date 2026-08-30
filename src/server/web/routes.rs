@@ -4,6 +4,7 @@ use reqwest::StatusCode;
 use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Instant;
 use tokio::sync::{Mutex, RwLock};
 use warp::{Filter, Rejection, Reply};
 
@@ -115,9 +116,71 @@ fn construct_json_fwd_route_no_body(
     api_proxies: Arc<RwLock<HashMap<u64, Arc<ApiProxy>>>>,
     db_manager: Arc<DBManager>,
     last_request_time: Arc<Mutex<Instant>>,
+    client_last_activity: Arc<Mutex<HashMap<u64, Instant>>>,
     route_function: Option<RouteFunc>,
 ) -> impl Filter<Extract = (warp::reply::WithStatus<warp::reply::Json>,), Error = Rejection> + Clone
 {
+    // Helper: Map API endpoint to DB cache lookup
+    async fn try_db_cache(
+        db_manager: &Arc<DBManager>,
+        endpoint: &str,
+        query: &HashMap<String, String>,
+    ) -> Option<Value> {
+        // Only cache immutable item endpoints
+        // Example endpoints:
+        // "me/player/currently-playing" (track/episode)
+        // "me/player/queue" (track/episode list)
+        // "me/player/recently-played" (track/episode list)
+        // "albums/{id}", "tracks/{id}", "artists/{id}", "playlists/{id}", "episodes/{id}", "shows/{id}"
+        // For demo, handle "albums", "tracks", "artists", "playlists", "episodes", "shows"
+        let parts: Vec<&str> = endpoint.split('/').collect();
+        if parts.len() == 2 {
+            let (typ, id) = (parts[0], parts[1]);
+            let uri = match typ {
+                "albums" => format!("spotify:album:{}", id),
+                "tracks" => format!("spotify:track:{}", id),
+                "artists" => format!("spotify:artist:{}", id),
+                "playlists" => format!("spotify:playlist:{}", id),
+                "episodes" => format!("spotify:episode:{}", id),
+                "shows" => format!("spotify:show:{}", id),
+                _ => return None,
+            };
+            match typ {
+                "albums" => {
+                    if let Ok(Some(val)) = db_manager.get_album(&uri).await {
+                        return Some(val);
+                    }
+                }
+                "tracks" => {
+                    if let Ok(Some(val)) = db_manager.get_track(&uri).await {
+                        return Some(val);
+                    }
+                }
+                "artists" => {
+                    if let Ok(Some(val)) = db_manager.get_artist(&uri).await {
+                        return Some(val);
+                    }
+                }
+                "playlists" => {
+                    if let Ok(Some(val)) = db_manager.get_playlist(&uri).await {
+                        return Some(val);
+                    }
+                }
+                "episodes" => {
+                    if let Ok(Some(val)) = db_manager.get_episode(&uri).await {
+                        return Some(val);
+                    }
+                }
+                "shows" => {
+                    if let Ok(Some(val)) = db_manager.get_show(&uri).await {
+                        return Some(val);
+                    }
+                }
+                _ => {}
+            }
+        }
+        None
+    }
     let full_route = full_route.to_string();
     let path_parts: Vec<_> = full_route.split('/').map(String::from).collect();
     let mut route = warp::any().boxed();
@@ -139,15 +202,14 @@ fn construct_json_fwd_route_no_body(
         .and(warp::path::end())
         .and(warp::query::<HashMap<String, String>>())
         .and_then({
-            // let full_route = full_route.clone();
-            // let route_type = route_type.clone();
-
+            let client_last_activity = Arc::clone(&client_last_activity);
             move |query: HashMap<String, String>| {
                 let last_request_time = Arc::clone(&last_request_time);
                 let api_proxies = Arc::clone(&api_proxies);
                 let db_manager = Arc::clone(&db_manager);
                 let route_type = route_type.clone();
                 let full_route = full_route.clone();
+                let client_last_activity = Arc::clone(&client_last_activity);
 
                 async move {
                     update_last_request_time(&last_request_time).await;
@@ -159,6 +221,12 @@ fn construct_json_fwd_route_no_body(
                             warp::reply::json(&serde_json::json!({})),
                             warp::http::StatusCode::FORBIDDEN,
                         ));
+                    }
+
+                    // Update client activity
+                    {
+                        let mut activity_map = client_last_activity.lock().await;
+                        activity_map.insert(client_id.unwrap(), Instant::now());
                     }
 
                     info!(
@@ -186,24 +254,37 @@ fn construct_json_fwd_route_no_body(
 
                     let proxy = proxy.unwrap();
                     let shortened_route = &full_route["api/spt-fwd/".len()..];
-                    let res = match route_function.is_none() {
-                        true => match route_type.clone() {
-                            RouteType::Get => proxy.get(shortened_route, Some(query)).await,
-                            RouteType::Delete => {
-                                error!("Cannot construct DELETE route without body.");
-                                proxy.delete(shortened_route, None, None).await
+
+                    // Try DB cache for GET requests to immutable items
+                    let cache_hit = if route_type == RouteType::Get {
+                        try_db_cache(&db_manager, shortened_route, &query).await
+                    } else {
+                        None
+                    };
+
+                    let res = if let Some(cached_json) = cache_hit {
+                        Ok((StatusCode::OK, cached_json))
+                    } else {
+                        match route_function.is_none() {
+                            true => match route_type.clone() {
+                                RouteType::Get => proxy.get(shortened_route, Some(query)).await,
+                                RouteType::Delete => {
+                                    error!("Cannot construct DELETE route without body.");
+                                    proxy.delete(shortened_route, None, None).await
+                                }
+                                RouteType::Post => {
+                                    error!("Cannot construct POST route without body.");
+                                    proxy.post(shortened_route, None, None).await
+                                }
+                                RouteType::Put => {
+                                    error!("Cannot construct PUT route without body.");
+                                    proxy.put(shortened_route, None, None).await
+                                }
+                            },
+                            false => {
+                                route_function.unwrap()(&proxy, &db_manager, Some(&query), None)
+                                    .await
                             }
-                            RouteType::Post => {
-                                error!("Cannot construct POST route without body.");
-                                proxy.post(shortened_route, None, None).await
-                            }
-                            RouteType::Put => {
-                                error!("Cannot construct PUT route without body.");
-                                proxy.put(shortened_route, None, None).await
-                            }
-                        },
-                        false => {
-                            route_function.unwrap()(&proxy, &db_manager, Some(&query), None).await
                         }
                     };
 
@@ -242,6 +323,7 @@ fn construct_json_fwd_route_with_body(
     full_route: &str,
     api_proxies: Arc<RwLock<HashMap<u64, Arc<ApiProxy>>>>,
     last_request_time: Arc<Mutex<Instant>>,
+    client_last_activity: Arc<Mutex<HashMap<u64, Instant>>>,
 ) -> impl Filter<Extract = (warp::reply::WithStatus<warp::reply::Json>,), Error = Rejection> + Clone
 {
     let full_route = full_route.to_string();
@@ -268,6 +350,7 @@ fn construct_json_fwd_route_with_body(
         .and(warp::query::<HashMap<String, String>>())
         .and(warp::body::json::<serde_json::Value>())
         .and_then({
+            let client_last_activity = Arc::clone(&client_last_activity);
             let full_route = full_route.clone();
             let route_type = route_type.clone();
 
@@ -276,6 +359,7 @@ fn construct_json_fwd_route_with_body(
                 let api_proxies = Arc::clone(&api_proxies);
                 let full_route = full_route.clone();
                 let route_type = route_type.clone();
+                let client_last_activity = Arc::clone(&client_last_activity);
 
                 async move {
                     update_last_request_time(&last_request_time).await;
@@ -287,6 +371,12 @@ fn construct_json_fwd_route_with_body(
                             warp::reply::json(&serde_json::json!({})),
                             warp::http::StatusCode::FORBIDDEN,
                         ));
+                    }
+
+                    // Update client activity
+                    {
+                        let mut activity_map = client_last_activity.lock().await;
+                        activity_map.insert(client_id.unwrap(), Instant::now());
                     }
 
                     info!(
@@ -361,6 +451,7 @@ fn construct_json_fwd_route(
     db_manager: Arc<DBManager>,
     api_proxies: Arc<RwLock<HashMap<u64, Arc<ApiProxy>>>>,
     last_request_time: Arc<Mutex<Instant>>,
+    client_last_activity: Arc<Mutex<HashMap<u64, Instant>>>,
     route_function: Option<RouteFunc>,
 ) -> impl Filter<Extract = (warp::reply::WithStatus<warp::reply::Json>,), Error = Rejection> + Clone
 {
@@ -371,12 +462,19 @@ fn construct_json_fwd_route(
             api_proxies,
             db_manager,
             last_request_time,
+            Arc::clone(&client_last_activity),
             route_function,
         )
         .boxed()
     } else {
-        construct_json_fwd_route_with_body(route_type, full_route, api_proxies, last_request_time)
-            .boxed()
+        construct_json_fwd_route_with_body(
+            route_type,
+            full_route,
+            api_proxies,
+            last_request_time,
+            Arc::clone(&client_last_activity),
+        )
+        .boxed()
     }
 }
 
@@ -385,6 +483,7 @@ pub fn routes(
     db_manager: Arc<DBManager>,
     next_client_id: Arc<Mutex<u64>>,
     last_request_time: Arc<Mutex<Instant>>,
+    client_last_activity: Arc<Mutex<HashMap<u64, Instant>>>,
 ) -> impl Filter<Extract = impl Reply, Error = Rejection> + Clone {
     // Define the routes
     let json_fwd_get_routes = vec![
@@ -400,6 +499,7 @@ pub fn routes(
         Arc::clone(&db_manager),
         Arc::clone(&api_proxies),
         Arc::clone(&last_request_time),
+        Arc::clone(&client_last_activity),
         route_function_mapper(json_fwd_get_routes[0]),
     )
     .boxed();
@@ -413,6 +513,7 @@ pub fn routes(
                 Arc::clone(&db_manager),
                 Arc::clone(&api_proxies),
                 Arc::clone(&last_request_time),
+                Arc::clone(&client_last_activity),
                 route_function_mapper(route),
             )
         })
@@ -432,6 +533,7 @@ pub fn routes(
                 Arc::clone(&db_manager),
                 Arc::clone(&api_proxies),
                 Arc::clone(&last_request_time),
+                Arc::clone(&client_last_activity),
                 route_function_mapper(json_fwd_get_routes[0]),
             )
         })
@@ -453,6 +555,7 @@ pub fn routes(
                 Arc::clone(&db_manager),
                 Arc::clone(&api_proxies),
                 Arc::clone(&last_request_time),
+                Arc::clone(&client_last_activity),
                 route_function_mapper(json_fwd_get_routes[0]),
             )
         })
@@ -487,6 +590,8 @@ pub fn routes(
         let last_request_time = Arc::clone(&last_request_time);
         let api_proxies = Arc::clone(&api_proxies);
         let next_client_id = Arc::clone(&next_client_id);
+        let client_last_activity = Arc::clone(&client_last_activity);
+        let db_manager = Arc::clone(&db_manager);
 
         move || {
             info!("Received call to route /init.",);
@@ -494,6 +599,8 @@ pub fn routes(
             let last_request_time = Arc::clone(&last_request_time);
             let api_proxies = Arc::clone(&api_proxies);
             let next_client_id = Arc::clone(&next_client_id);
+            let client_last_activity = Arc::clone(&client_last_activity);
+            let db_manager = Arc::clone(&db_manager);
 
             async move {
                 update_last_request_time(&last_request_time).await;
@@ -504,15 +611,19 @@ pub fn routes(
                 *next_client_id_g += 1;
 
                 {
+                    let proxy = ApiProxy::new(client_id_val, Arc::clone(&db_manager));
+                    // Restore a cached refresh/access token from a previous run, if any, so
+                    // dev/test iteration doesn't require going through browser auth every time.
+                    proxy.load_cached_auth().await;
+
                     let mut api_proxies = api_proxies.write().await;
-                    api_proxies.insert(client_id_val, Arc::new(ApiProxy::new(client_id_val)));
+                    api_proxies.insert(client_id_val, Arc::new(proxy));
 
                     debug!("Added client_id {} to API proxy map.", client_id_val);
-
-                    // println!("Printing the HashMap:");
-                    // for (key, value) in &*api_proxies {
-                    //     println!("{}: {:p}", key, &value);
-                    // }
+                }
+                {
+                    let mut activity_map = client_last_activity.lock().await;
+                    activity_map.insert(client_id_val, Instant::now());
                 }
 
                 let v: Value = serde_json::json!({ "client_id": client_id_val });
@@ -528,10 +639,12 @@ pub fn routes(
         .and_then({
             let api_proxies = Arc::clone(&api_proxies);
             let last_request_time = Arc::clone(&last_request_time);
+            let client_last_activity = Arc::clone(&client_last_activity);
 
             move |query: std::collections::HashMap<String, String>| {
                 let last_request_time = Arc::clone(&last_request_time);
                 let api_proxies = Arc::clone(&api_proxies);
+                let client_last_activity = Arc::clone(&client_last_activity);
 
                 async move {
                     update_last_request_time(&last_request_time).await;
@@ -548,6 +661,11 @@ pub fn routes(
                         "Received call to route /auth/cb with client_id {}.",
                         client_id.clone().unwrap()
                     );
+
+                    {
+                        let mut activity_map = client_last_activity.lock().await;
+                        activity_map.insert(client_id.unwrap(), Instant::now());
+                    }
 
                     let proxy = {
                         let api_proxies = api_proxies.read().await;

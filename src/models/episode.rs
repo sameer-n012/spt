@@ -1,4 +1,4 @@
-use serde_json::Value;
+use crate::util::errors::DataParseError;
 use sqlx::query::Query;
 
 #[derive(Debug, Clone)]
@@ -39,55 +39,44 @@ impl Episode {
         let mut e = Episode {
             uri: episode_record["uri"]
                 .as_str()
-                .ok_or(DataParseError::new("uri"))?
+                .ok_or(DataParseError::FieldMissingError)?
                 .to_string(),
             name: episode_record["name"]
                 .as_str()
-                .ok_or(DataParseError::new("name"))?
+                .ok_or(DataParseError::FieldMissingError)?
                 .to_string(),
             show_uri: episode_record["show_uri"]
                 .as_str()
-                .ok_or(DataParseError::new("show_uri"))?
+                .ok_or(DataParseError::FieldMissingError)?
                 .to_string(),
             episode_number: episode_record["episode_number"]
                 .as_i64()
-                .ok_or(DataParseError::new("episode_number"))? as i32,
+                .ok_or(DataParseError::FieldMissingError)? as i32,
             release_date: episode_record["release_date"]
                 .as_str()
-                .ok_or(DataParseError::new("release_date"))?
+                .ok_or(DataParseError::FieldMissingError)?
                 .to_string(),
             description: episode_record["description"]
                 .as_str()
                 .map(|s| s.to_string()),
             duration_ms: episode_record["duration_ms"]
                 .as_i64()
-                .ok_or(DataParseError::new("duration_ms"))? as i32,
+                .ok_or(DataParseError::FieldMissingError)? as i32,
             explicit: episode_record["explicit"]
                 .as_bool()
-                .ok_or(DataParseError::new("explicit"))?,
-            user_analytics: None,
-        };
-
-        e.user_analytics = if let Some(eua_record) = episode_user_analytics_record {
-            Some(EpisodeUserAnalytics {
-                user_id: eua_record["user_id"]
+                .ok_or(DataParseError::FieldMissingError)?,
+            user_analytics: episode_user_analytics_record.map(|_| EpisodeUserAnalytics {
+                user_id: episode_record["user_id"]
                     .as_str()
-                    .ok_or(DataParseError::new("user_id"))?
+                    .unwrap_or_default()
                     .to_string(),
-                play_count: eua_record["play_count"]
-                    .as_i64()
-                    .ok_or(DataParseError::new("play_count"))? as i32,
-                skip_count: eua_record["skip_count"]
-                    .as_i64()
-                    .ok_or(DataParseError::new("skip_count"))? as i32,
-                replay_count: eua_record["replay_count"]
-                    .as_i64()
-                    .ok_or(DataParseError::new("replay_count"))?
-                    as i32,
-                last_played: eua_record["last_played"].as_str().map(|s| s.to_string()),
-            })
-        } else {
-            None
+                play_count: episode_record["play_count"].as_i64().unwrap_or(0) as i32,
+                skip_count: episode_record["skip_count"].as_i64().unwrap_or(0) as i32,
+                replay_count: episode_record["replay_count"].as_i64().unwrap_or(0) as i32,
+                last_played: episode_record["last_played"]
+                    .as_str()
+                    .map(|s| s.to_string()),
+            }),
         };
 
         Ok(e)
@@ -100,32 +89,32 @@ impl Episode {
         let mut e = Episode {
             uri: episode_record["uri"]
                 .as_str()
-                .ok_or(DataParseError::new("uri"))?
+                .ok_or(DataParseError::FieldMissingError)?
                 .to_string(),
             name: episode_record["name"]
                 .as_str()
-                .ok_or(DataParseError::new("name"))?
+                .ok_or(DataParseError::FieldMissingError)?
                 .to_string(),
             show_uri: episode_record["show_uri"]
                 .as_str()
-                .ok_or(DataParseError::new("show_uri"))?
+                .ok_or(DataParseError::FieldMissingError)?
                 .to_string(),
             episode_number: episode_record["episode_number"]
                 .as_i64()
-                .ok_or(DataParseError::new("episode_number"))? as i32,
+                .ok_or(DataParseError::FieldMissingError)? as i32,
             release_date: episode_record["release_date"]
                 .as_str()
-                .ok_or(DataParseError::new("release_date"))?
+                .ok_or(DataParseError::FieldMissingError)?
                 .to_string(),
             description: episode_record["description"]
                 .as_str()
                 .map(|s| s.to_string()),
             duration_ms: episode_record["duration_ms"]
                 .as_i64()
-                .ok_or(DataParseError::new("duration_ms"))? as i32,
+                .ok_or(DataParseError::FieldMissingError)? as i32,
             explicit: episode_record["explicit"]
                 .as_bool()
-                .ok_or(DataParseError::new("explicit"))?,
+                .ok_or(DataParseError::FieldMissingError)?,
             user_analytics: None,
         };
 
@@ -133,18 +122,17 @@ impl Episode {
             Some(EpisodeUserAnalytics {
                 user_id: eua_record["user_id"]
                     .as_str()
-                    .ok_or(DataParseError::new("user_id"))?
+                    .ok_or(DataParseError::FieldMissingError)?
                     .to_string(),
                 play_count: eua_record["play_count"]
                     .as_i64()
-                    .ok_or(DataParseError::new("play_count"))? as i32,
+                    .ok_or(DataParseError::FieldMissingError)? as i32,
                 skip_count: eua_record["skip_count"]
                     .as_i64()
-                    .ok_or(DataParseError::new("skip_count"))? as i32,
+                    .ok_or(DataParseError::FieldMissingError)? as i32,
                 replay_count: eua_record["replay_count"]
                     .as_i64()
-                    .ok_or(DataParseError::new("replay_count"))?
-                    as i32,
+                    .ok_or(DataParseError::FieldMissingError)? as i32,
                 last_played: eua_record["last_played"].as_str().map(|s| s.to_string()),
             })
         } else {
@@ -180,9 +168,10 @@ impl Episode {
         })
     }
 
-    pub fn generate_insert_query(&self) -> Query {
-        let query_str = "INSERT INTO episodes (uri, name, show_uri, episode_number, release_date, description, \
-            duration_ms, explicit) VALUES (?, ?, ?, ?, ?, ?, ?, ?)";
+    pub fn generate_insert_query(
+        &self,
+    ) -> Query<'_, sqlx::Sqlite, sqlx::sqlite::SqliteArguments<'_>> {
+        let query_str = "INSERT INTO episodes (uri, name, show_uri, episode_number, release_date, description, duration_ms, explicit) VALUES (?, ?, ?, ?, ?, ?, ?, ?)";
         let mut query = sqlx::query(query_str);
         query = query.bind(&self.uri);
         query = query.bind(&self.name);
@@ -195,10 +184,10 @@ impl Episode {
         query
     }
 
-    pub fn generate_update_query(&self) -> Query {
-        let query_str =
-            "UPDATE episodes SET name = ?, show_uri = ?, episode_number = ?, release_date = ?, \
-            description = ?, duration_ms = ?, explicit = ? WHERE uri = ?";
+    pub fn generate_update_query<'q>(
+        &'q self,
+    ) -> Query<'q, sqlx::Sqlite, sqlx::sqlite::SqliteArguments<'q>> {
+        let query_str = "UPDATE episodes SET name = ?, show_uri = ?, episode_number = ?, release_date = ?, description = ?, duration_ms = ?, explicit = ? WHERE uri = ?";
         let mut query = sqlx::query(query_str);
         query = query.bind(&self.name);
         query = query.bind(&self.show_uri);
@@ -211,14 +200,19 @@ impl Episode {
         query
     }
 
-    pub fn generate_delete_query(&self) -> Query {
+    pub fn generate_delete_query(
+        &self,
+    ) -> Query<'_, sqlx::Sqlite, sqlx::sqlite::SqliteArguments<'_>> {
         let query_str = "DELETE FROM episodes WHERE uri = ?";
         let mut query = sqlx::query(query_str);
         query = query.bind(&self.uri);
         query
     }
 
-    pub fn generate_user_analytics_insert_query(&self, user_id: &str) -> Option<Query> {
+    pub fn generate_user_analytics_insert_query<'q>(
+        &'q self,
+        user_id: &'q str,
+    ) -> Option<Query<'q, sqlx::Sqlite, sqlx::sqlite::SqliteArguments<'q>>> {
         if let Some(ua) = &self.user_analytics {
             let query_str = "INSERT INTO episode_user_analytics (user_id, episode_uri, play_count, skip_count, \
                 replay_count, last_played) VALUES (?, ?, ?, ?, ?, ?)";
@@ -235,7 +229,10 @@ impl Episode {
         }
     }
 
-    pub fn generate_user_analytics_update_query(&self, user_id: &str) -> Option<Query> {
+    pub fn generate_user_analytics_update_query<'q>(
+        &'q self,
+        user_id: &'q str,
+    ) -> Option<Query<'q, sqlx::Sqlite, sqlx::sqlite::SqliteArguments<'q>>> {
         if let Some(ua) = &self.user_analytics {
             let query_str = "UPDATE episode_user_analytics SET play_count = ?, skip_count = ?, replay_count = ?, \
                 last_played = ? WHERE user_id = ? AND episode_uri = ?";
@@ -252,7 +249,9 @@ impl Episode {
         }
     }
 
-    pub fn generate_user_analytics_delete_query(&self) -> Option<Query> {
+    pub fn generate_user_analytics_delete_query<'q>(
+        &'q self,
+    ) -> Option<Query<'q, sqlx::Sqlite, sqlx::sqlite::SqliteArguments<'q>>> {
         let query_str = "DELETE FROM episode_user_analytics WHERE episode_uri = ?";
         let mut query = sqlx::query(query_str);
         query = query.bind(&self.uri);

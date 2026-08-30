@@ -1,4 +1,4 @@
-use serde_json::Value;
+use crate::util::errors::DataParseError;
 use sqlx::query::Query;
 
 #[derive(Debug, Clone)]
@@ -22,15 +22,15 @@ impl Show {
         Ok(Show {
             uri: show_record["uri"]
                 .as_str()
-                .ok_or(DataParseError::new("uri"))?
+                .ok_or(DataParseError::FieldMissingError)?
                 .to_string(),
             name: show_record["name"]
                 .as_str()
-                .ok_or(DataParseError::new("name"))?
+                .ok_or(DataParseError::FieldMissingError)?
                 .to_string(),
             publisher: show_record["publisher"]
                 .as_str()
-                .ok_or(DataParseError::new("publisher"))?
+                .ok_or(DataParseError::FieldMissingError)?
                 .to_string(),
             description: show_record["description"].as_str().map(|s| s.to_string()),
         })
@@ -50,7 +50,9 @@ impl Show {
         })
     }
 
-    pub fn generate_insert_query(&self) -> Query {
+    pub fn generate_insert_query(
+        &self,
+    ) -> Query<'_, sqlx::Sqlite, sqlx::sqlite::SqliteArguments<'_>> {
         let query_str = "INSERT INTO shows (uri, name, publisher, description) VALUES (?, ?, ?, ?)";
         let mut query = sqlx::query(query_str);
         query = query.bind(&self.uri);
@@ -60,7 +62,9 @@ impl Show {
         query
     }
 
-    pub fn generate_update_query(&self) -> Query {
+    pub fn generate_update_query(
+        &self,
+    ) -> Query<'_, sqlx::Sqlite, sqlx::sqlite::SqliteArguments<'_>> {
         let query_str = "UPDATE shows SET name = ?, publisher = ?, description = ? WHERE uri = ?";
         let mut query = sqlx::query(query_str);
         query = query.bind(&self.name);
@@ -70,7 +74,9 @@ impl Show {
         query
     }
 
-    pub fn generate_delete_query(&self) -> Query {
+    pub fn generate_delete_query(
+        &self,
+    ) -> Query<'_, sqlx::Sqlite, sqlx::sqlite::SqliteArguments<'_>> {
         let query_str = "DELETE FROM shows WHERE uri = ?";
         let mut query = sqlx::query(query_str);
         query = query.bind(&self.uri);

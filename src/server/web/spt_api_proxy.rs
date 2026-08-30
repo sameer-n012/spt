@@ -1,3 +1,4 @@
+use crate::server::db::db_manager::DBManager;
 use crate::util::errors::{self, ApiError};
 use base64::{engine::general_purpose, Engine};
 use log::{debug, error, info, warn};
@@ -40,17 +41,34 @@ pub struct ApiProxy {
     pub cb_auth_notifier: Arc<Notify>,
 
     last_request_time: Arc<Mutex<Instant>>,
+
+    db_manager: Arc<DBManager>, // used to cache/restore OAuth tokens across server restarts
+}
+
+fn systemtime_to_unix(t: SystemTime) -> i64 {
+    t.duration_since(SystemTime::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
+}
+
+fn unix_to_systemtime(secs: i64) -> SystemTime {
+    if secs <= 0 {
+        return SystemTime::UNIX_EPOCH;
+    }
+    SystemTime::UNIX_EPOCH + Duration::from_secs(secs as u64)
 }
 
 impl ApiProxy {
-    pub fn new(user_client_id: u64) -> Self {
-        let client_id = env::var("SPT_API_CLIENT_ID").expect("SPT_API_CLIENT_ID must be set");
+    pub fn new(user_client_id: u64, db_manager: Arc<DBManager>) -> Self {
+        let client_id =
+            env::var("SPT_SPOTIFY_API_CLIENT_ID").expect("SPT_SPOTIFY_API_CLIENT_ID must be set");
         // let client_secret =
         //     env::var("SPT_API_CLIENT_SECRET").expect("SPT_API_CLIENT_SECRET must be set");
-        let base_url = env::var("SPT_API_BASE_URL").expect("SPT_API_BASE_URL must be set");
+        let base_url =
+            env::var("SPT_SPOTIFY_API_BASE_URL").expect("SPT_SPOTIFY_API_BASE_URL must be set");
         let callback_url =
-            env::var("SERVER_CALLBACK_URL").expect("SERVER_CALLBACK_URL must be set");
-        let scope = env::var("SPT_API_SCOPE").expect("SPT_API_SCOPE must be set");
+            env::var("SPT_SERVER_CALLBACK_URL").expect("SPT_SERVER_CALLBACK_URL must be set");
+        let scope = env::var("SPT_SPOTIFY_API_SCOPE").expect("SPT_SPOTIFY_API_SCOPE must be set");
 
         return ApiProxy {
             client: Client::new(),
@@ -71,7 +89,91 @@ impl ApiProxy {
             }),
             cb_auth_notifier: Arc::new(Notify::new()),
             last_request_time: Arc::new(Mutex::new(Instant::now())),
+
+            db_manager,
         };
+    }
+
+    // Restores a previously cached refresh/access token for this Spotify app registration, if
+    // one was saved by a prior run. Dev/test convenience so the browser-based authorization
+    // flow doesn't have to be repeated after every server restart. Best-effort: any DB error is
+    // logged and ignored, falling back to the normal auth() flow on first use.
+    pub async fn load_cached_auth(&self) {
+        let cached = match self
+            .db_manager
+            .load_cached_auth_tokens(&self.application_id)
+            .await
+        {
+            Ok(cached) => cached,
+            Err(e) => {
+                warn!(
+                    "Client {} failed to load cached auth tokens: {}.",
+                    self.user_client_id, e
+                );
+                return;
+            }
+        };
+
+        let Some((access_token, access_token_expiry, refresh_token)) = cached else {
+            debug!(
+                "Client {} found no cached auth tokens for this app.",
+                self.user_client_id
+            );
+            return;
+        };
+
+        let mut auth_info = self.auth_info.write().await;
+        auth_info.refresh_token = Some(refresh_token);
+
+        // Only reuse the cached access token if it hasn't expired yet; otherwise leave it
+        // unset so validate_auth() falls through to reauth() using the refresh token above.
+        if let (Some(token), Some(expiry)) = (access_token, access_token_expiry) {
+            let expiry = unix_to_systemtime(expiry);
+            if expiry > SystemTime::now() {
+                auth_info.access_token = Some((token, expiry));
+            }
+        }
+
+        info!(
+            "Client {} restored cached auth tokens from a previous session.",
+            self.user_client_id
+        );
+    }
+
+    // Persists the current in-memory tokens so a future run of load_cached_auth() can restore
+    // them. Best-effort: failures are logged, not propagated, since caching is a dev/test
+    // convenience and shouldn't block the actual auth flow.
+    async fn persist_auth_tokens(&self) {
+        let (access_token, refresh_token) = {
+            let auth_info = self.auth_info.read().await;
+            (auth_info.access_token.clone(), auth_info.refresh_token.clone())
+        };
+
+        let Some(refresh_token) = refresh_token else {
+            return;
+        };
+
+        let (access_token_str, access_token_expiry) = match &access_token {
+            Some((token, expiry)) => (Some(token.as_str()), Some(systemtime_to_unix(*expiry))),
+            None => (None, None),
+        };
+
+        if let Err(e) = self
+            .db_manager
+            .save_cached_auth_tokens(
+                &self.application_id,
+                access_token_str,
+                access_token_expiry,
+                &refresh_token,
+                systemtime_to_unix(SystemTime::now()),
+            )
+            .await
+        {
+            warn!(
+                "Client {} failed to cache auth tokens: {}.",
+                self.user_client_id, e
+            );
+        }
     }
 
     pub async fn set_cb_auth_code(&self, code: String) {
@@ -276,6 +378,8 @@ impl ApiProxy {
                 self.user_client_id
             );
 
+            self.persist_auth_tokens().await;
+
             return Ok(status);
         }
 
@@ -395,6 +499,8 @@ impl ApiProxy {
                 self.user_client_id
             );
 
+            self.persist_auth_tokens().await;
+
             return Ok(status);
         }
 
@@ -407,6 +513,25 @@ impl ApiProxy {
             auth_info.refresh_token = None;
         }
         self.unset_cb_auth_code().await;
+
+        // A 400 here is Spotify's invalid_grant response — the refresh token itself is dead
+        // (revoked, or past its 6-month lifetime) and retrying it will never succeed. Drop the
+        // cached copy so a future restart doesn't keep restoring a refresh token that can only
+        // ever fail, and instead falls straight through to browser auth. Other statuses (5xx,
+        // network hiccups relayed as an error status, etc.) are left alone, since the refresh
+        // token itself may still be valid.
+        if status == StatusCode::BAD_REQUEST {
+            if let Err(e) = self
+                .db_manager
+                .delete_cached_auth_tokens(&self.application_id)
+                .await
+            {
+                warn!(
+                    "Client {} failed to clear cached auth tokens after invalid_grant: {}.",
+                    self.user_client_id, e
+                );
+            }
+        }
 
         return Err(errors::return_response_error(status));
     }

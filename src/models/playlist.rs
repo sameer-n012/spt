@@ -1,4 +1,4 @@
-use serde_json::Value;
+use crate::util::errors::DataParseError;
 use sqlx::query::Query;
 
 #[derive(Debug, Clone)]
@@ -25,28 +25,28 @@ impl Playlist {
         Ok(Playlist {
             uri: playlist_record["uri"]
                 .as_str()
-                .ok_or(DataParseError::new("uri"))?
+                .ok_or(DataParseError::FieldMissingError)?
                 .to_string(),
             user_id: playlist_record["user_id"]
                 .as_str()
-                .ok_or(DataParseError::new("user_id"))?
+                .ok_or(DataParseError::FieldMissingError)?
                 .to_string(),
             name: playlist_record["name"]
                 .as_str()
-                .ok_or(DataParseError::new("name"))?
+                .ok_or(DataParseError::FieldMissingError)?
                 .to_string(),
             description: playlist_record["description"]
                 .as_str()
                 .map(|s| s.to_string()),
             public: playlist_record["public"]
                 .as_bool()
-                .ok_or(DataParseError::new("public"))?,
+                .ok_or(DataParseError::FieldMissingError)?,
             collaborative: playlist_record["collaborative"]
                 .as_bool()
-                .ok_or(DataParseError::new("collaborative"))?,
+                .ok_or(DataParseError::FieldMissingError)?,
             snapshot_id: playlist_record["snapshot_id"]
                 .as_str()
-                .ok_or(DataParseError::new("snapshot_id"))?
+                .ok_or(DataParseError::FieldMissingError)?
                 .to_string(),
         })
     }
@@ -68,20 +68,24 @@ impl Playlist {
         })
     }
 
-    pub fn generate_insert_query(&self) -> Query {
+    pub fn generate_insert_query(
+        &self,
+    ) -> Query<'_, sqlx::Sqlite, sqlx::sqlite::SqliteArguments<'_>> {
         let query_str = "INSERT INTO playlists (uri, user_id, name, description, public, collaborative, snapshot_id) VALUES (?, ?, ?, ?, ?, ?, ?)";
         let mut query = sqlx::query(query_str);
         query = query.bind(&self.uri);
         query = query.bind(&self.user_id);
         query = query.bind(&self.name);
         query = query.bind(&self.description);
-        query = query.bind(self.public);
-        query = query.bind(self.collaborative);
+        query = query.bind(&self.public);
+        query = query.bind(&self.collaborative);
         query = query.bind(&self.snapshot_id);
         query
     }
 
-    pub fn generate_update_query(&self) -> Query {
+    pub fn generate_update_query(
+        &self,
+    ) -> Query<'_, sqlx::Sqlite, sqlx::sqlite::SqliteArguments<'_>> {
         let query_str = "UPDATE playlists SET user_id = ?, name = ?, description = ?, public = ?, collaborative = ?, snapshot_id = ? WHERE uri = ?";
         let mut query = sqlx::query(query_str);
         query = query.bind(&self.user_id);
@@ -94,7 +98,9 @@ impl Playlist {
         query
     }
 
-    pub fn generate_delete_query(&self) -> Query {
+    pub fn generate_delete_query(
+        &self,
+    ) -> Query<'_, sqlx::Sqlite, sqlx::sqlite::SqliteArguments<'_>> {
         let query_str = "DELETE FROM playlists WHERE uri = ?";
         let mut query = sqlx::query(query_str);
         query = query.bind(&self.uri);

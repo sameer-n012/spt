@@ -1,4 +1,4 @@
-use serde_json::Value;
+use crate::util::errors::DataParseError;
 use sqlx::query::Query;
 
 #[derive(Debug, Clone)]
@@ -20,11 +20,11 @@ impl Artist {
         Ok(Artist {
             uri: artist_record["uri"]
                 .as_str()
-                .ok_or(DataParseError::new("uri"))?
+                .ok_or(DataParseError::FieldMissingError)?
                 .to_string(),
             name: artist_record["name"]
                 .as_str()
-                .ok_or(DataParseError::new("name"))?
+                .ok_or(DataParseError::FieldMissingError)?
                 .to_string(),
         })
     }
@@ -41,7 +41,9 @@ impl Artist {
         })
     }
 
-    pub fn generate_insert_query(&self) -> Query {
+    pub fn generate_insert_query(
+        &self,
+    ) -> Query<'_, sqlx::Sqlite, sqlx::sqlite::SqliteArguments<'_>> {
         let query_str = "INSERT INTO artists (uri, name) VALUES (?, ?)";
         let mut query = sqlx::query(query_str);
         query = query.bind(&self.uri);
@@ -49,7 +51,9 @@ impl Artist {
         query
     }
 
-    pub fn generate_update_query(&self) -> Query {
+    pub fn generate_update_query(
+        &self,
+    ) -> Query<'_, sqlx::Sqlite, sqlx::sqlite::SqliteArguments<'_>> {
         let query_str = "UPDATE artists SET name = ? WHERE uri = ?";
         let mut query = sqlx::query(query_str);
         query = query.bind(&self.name);
@@ -57,7 +61,9 @@ impl Artist {
         query
     }
 
-    pub fn generate_delete_query(&self) -> Query {
+    pub fn generate_delete_query(
+        &self,
+    ) -> Query<'_, sqlx::Sqlite, sqlx::sqlite::SqliteArguments<'_>> {
         let query_str = "DELETE FROM artists WHERE uri = ?";
         let mut query = sqlx::query(query_str);
         query = query.bind(&self.uri);
