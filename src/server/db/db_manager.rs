@@ -266,6 +266,203 @@ impl DBManager {
         }))
     }
 
+    // --- Cache population from live Spotify API responses ---
+    //
+    // Called after a cache-miss fetch (see routes.rs's per-item lookup routes) to store the
+    // freshly-fetched item so the next lookup can be served from SQLite instead of hitting
+    // Spotify again. Best-effort: a mapping/insert failure here should never fail the request
+    // that's already carrying a perfectly good live API response back to the caller.
+    //
+    // Spotify's response shapes don't line up 1:1 with this project's flatter DB schema (nested
+    // album/artist/show objects, renamed fields like album_type vs. this schema's `type`), so
+    // each cache_*_from_api method below re-maps fields before handing them to the existing
+    // Model::from_api_record()/generate_insert_query() pair.
+
+    pub async fn cache_item_from_api(
+        &self,
+        uri: &str,
+        api_json: &serde_json::Value,
+    ) -> Result<(), DBError> {
+        match get_uri_type(uri) {
+            UriType::Track => self.cache_track_from_api(api_json).await,
+            UriType::Album => self.cache_album_from_api(api_json).await,
+            UriType::Artist => self.cache_artist_from_api(api_json).await,
+            UriType::Episode => self.cache_episode_from_api(api_json).await,
+            UriType::Show => self.cache_show_from_api(api_json).await,
+            UriType::Playlist => self.cache_playlist_from_api(api_json).await,
+            UriType::Unknown => Err(DBError::InvalidURI),
+        }
+    }
+
+    async fn cache_track_from_api(&self, json: &serde_json::Value) -> Result<(), DBError> {
+        // Cache the embedded SimplifiedAlbumObject/SimplifiedArtistObjects first (best-effort —
+        // a failure here shouldn't stop the track itself from being cached).
+        let _ = self.cache_album_from_api(&json["album"]).await;
+        if let Some(artists) = json["artists"].as_array() {
+            for artist_json in artists {
+                let _ = self.cache_artist_from_api(artist_json).await;
+            }
+        }
+
+        let mapped = serde_json::json!({
+            "uri": json["uri"].clone(),
+            "name": json["name"].clone(),
+            "album_uri": json["album"]["uri"].clone(),
+            "track_number": json["track_number"].clone(),
+            "disc_number": json["disc_number"].clone(),
+            "duration_ms": json["duration_ms"].clone(),
+            "explicit": json["explicit"].clone(),
+            "popularity": json["popularity"].clone(), // deprecated field; commonly absent/null
+        });
+
+        let track = crate::models::track::Track::from_api_record(mapped, None)
+            .map_err(|_| DBError::CacheParseError)?;
+
+        track
+            .generate_insert_query()
+            .execute(self.connection.as_ref().unwrap())
+            .await
+            .map_err(|_| DBError::QueryError)?;
+
+        if let Some(artists) = json["artists"].as_array() {
+            for artist_json in artists {
+                if let Some(artist_uri) = artist_json["uri"].as_str() {
+                    let _ = sqlx::query(
+                        "INSERT INTO track_artists (track_uri, artist_uri) VALUES ($1, $2)",
+                    )
+                    .bind(&track.uri)
+                    .bind(artist_uri)
+                    .execute(self.connection.as_ref().unwrap())
+                    .await;
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    async fn cache_album_from_api(&self, json: &serde_json::Value) -> Result<(), DBError> {
+        let mapped = serde_json::json!({
+            "uri": json["uri"].clone(),
+            "name": json["name"].clone(),
+            "type": json["album_type"].clone(), // Spotify calls this `album_type`, not `type`
+            "release_date": json["release_date"].clone(),
+        });
+
+        let album = crate::models::album::Album::from_api_record(mapped)
+            .map_err(|_| DBError::CacheParseError)?;
+
+        album
+            .generate_insert_query()
+            .execute(self.connection.as_ref().unwrap())
+            .await
+            .map_err(|_| DBError::QueryError)?;
+
+        Ok(())
+    }
+
+    async fn cache_artist_from_api(&self, json: &serde_json::Value) -> Result<(), DBError> {
+        // Spotify's ArtistObject already has flat uri/name fields matching this model directly.
+        let artist = crate::models::artist::Artist::from_api_record(json.clone())
+            .map_err(|_| DBError::CacheParseError)?;
+
+        artist
+            .generate_insert_query()
+            .execute(self.connection.as_ref().unwrap())
+            .await
+            .map_err(|_| DBError::QueryError)?;
+
+        Ok(())
+    }
+
+    async fn cache_show_from_api(&self, json: &serde_json::Value) -> Result<(), DBError> {
+        // Spotify's Show/SimplifiedShowObject already has flat uri/name/publisher/description
+        // fields matching this model directly.
+        let show = crate::models::show::Show::from_api_record(json.clone())
+            .map_err(|_| DBError::CacheParseError)?;
+
+        show.generate_insert_query()
+            .execute(self.connection.as_ref().unwrap())
+            .await
+            .map_err(|_| DBError::QueryError)?;
+
+        Ok(())
+    }
+
+    async fn cache_episode_from_api(&self, json: &serde_json::Value) -> Result<(), DBError> {
+        // Cache the embedded SimplifiedShowObject first (best-effort).
+        let _ = self.cache_show_from_api(&json["show"]).await;
+
+        let mapped = serde_json::json!({
+            "uri": json["uri"].clone(),
+            "name": json["name"].clone(),
+            "show_uri": json["show"]["uri"].clone(),
+            // Spotify's episode objects don't expose a stored episode-number field the way this
+            // schema expects one; default to 0 rather than dropping the episode from the cache.
+            "episode_number": if json["episode_number"].is_null() {
+                serde_json::json!(0)
+            } else {
+                json["episode_number"].clone()
+            },
+            "release_date": json["release_date"].clone(),
+            "description": json["description"].clone(),
+            "duration_ms": json["duration_ms"].clone(),
+            "explicit": json["explicit"].clone(),
+        });
+
+        let episode = crate::models::episode::Episode::from_api_record(mapped, None)
+            .map_err(|_| DBError::CacheParseError)?;
+
+        episode
+            .generate_insert_query()
+            .execute(self.connection.as_ref().unwrap())
+            .await
+            .map_err(|_| DBError::QueryError)?;
+
+        Ok(())
+    }
+
+    async fn cache_playlist_from_api(&self, json: &serde_json::Value) -> Result<(), DBError> {
+        let user_id = json["owner"]["id"].as_str().unwrap_or_default().to_string();
+        let display_name = json["owner"]["display_name"]
+            .as_str()
+            .unwrap_or(&user_id)
+            .to_string();
+
+        // playlists.user_id has no other source of truth here; ensure a minimal placeholder
+        // user row exists for the owner so caching a playlist doesn't depend on its owner ever
+        // having authorized this app themselves.
+        let _ = sqlx::query(
+            "INSERT INTO users (user_id, display_name) VALUES ($1, $2) \
+                ON CONFLICT(user_id) DO NOTHING",
+        )
+        .bind(&user_id)
+        .bind(&display_name)
+        .execute(self.connection.as_ref().unwrap())
+        .await;
+
+        let mapped = serde_json::json!({
+            "uri": json["uri"].clone(),
+            "user_id": user_id,
+            "name": json["name"].clone(),
+            "description": json["description"].clone(),
+            "public": json["public"].clone(),
+            "collaborative": json["collaborative"].clone(),
+            "snapshot_id": json["snapshot_id"].clone(),
+        });
+
+        let playlist = crate::models::playlist::Playlist::from_api_record(mapped)
+            .map_err(|_| DBError::CacheParseError)?;
+
+        playlist
+            .generate_insert_query()
+            .execute(self.connection.as_ref().unwrap())
+            .await
+            .map_err(|_| DBError::QueryError)?;
+
+        Ok(())
+    }
+
     // Removes a cached token entry once its refresh token is confirmed dead (e.g. Spotify's
     // token endpoint returned invalid_grant), so a future server start doesn't keep retrying a
     // refresh token that can never succeed again before falling back to browser auth.
@@ -517,7 +714,7 @@ impl DBManager {
     ) -> Result<(), DBError> {
         // get current most recent song for user
         let res = sqlx::query(
-            "SELECT item_uri, position, updated_at, CURRENT_TIMESTAMP - updated_at as time_since_update FROM play_history
+            "SELECT item_uri, position, updated_at FROM play_history
             WHERE user_id = $1 ORDER BY updated_at DESC LIMIT 1",
         )
         .bind(user_id)
@@ -525,10 +722,11 @@ impl DBManager {
         .await;
 
         if let Ok(row) = res {
-            let prev_uri: String = row.try_get("uri").unwrap_or_default();
+            // updated_at is a SQLite TIMESTAMP column, populated via CURRENT_TIMESTAMP, so it
+            // comes back as text (e.g. "2026-08-30 12:34:56"), not an integer.
+            let prev_uri: String = row.try_get("item_uri").unwrap_or_default();
             let prev_pos: i64 = row.try_get("position").unwrap_or(0);
-            let prev_ts: i64 = row.try_get("updated_at").unwrap_or(0);
-            let time_since_prev_ts: i64 = row.try_get("time_since_update").unwrap_or(0);
+            let prev_ts: String = row.try_get("updated_at").unwrap_or_default();
             if prev_uri == uri {
                 let _ = sqlx::query(
                     "UPDATE play_history SET position = $1, updated_at = CURRENT_TIMESTAMP
@@ -575,7 +773,7 @@ impl DBManager {
                     "INSERT INTO play_history (user_id, item_uri, position, updated_at)
                      VALUES ($1, $2, $3, CURRENT_TIMESTAMP)
                      ON CONFLICT(user_id) DO UPDATE SET
-                     item_uri = excluded.uri,
+                     item_uri = excluded.item_uri,
                      position = excluded.position,
                      updated_at = excluded.updated_at",
                 )

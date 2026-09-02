@@ -110,6 +110,137 @@ fn route_func_now_playing<'a>(
     .boxed()
 }
 
+// Looks up a cacheable single-item endpoint ("albums/{id}", "tracks/{id}", etc.) in the local
+// SQLite cache. Returns None on a cache miss (or for any endpoint that isn't cacheable), in
+// which case the caller should fetch live and, on success, cache the response via
+// DBManager::cache_item_from_api.
+async fn try_db_cache(db_manager: &Arc<DBManager>, endpoint: &str) -> Option<Value> {
+    let parts: Vec<&str> = endpoint.split('/').collect();
+    if parts.len() != 2 {
+        return None;
+    }
+    let (typ, id) = (parts[0], parts[1]);
+    let uri = match typ {
+        "albums" => format!("spotify:album:{}", id),
+        "tracks" => format!("spotify:track:{}", id),
+        "artists" => format!("spotify:artist:{}", id),
+        "playlists" => format!("spotify:playlist:{}", id),
+        "episodes" => format!("spotify:episode:{}", id),
+        "shows" => format!("spotify:show:{}", id),
+        _ => return None,
+    };
+    let result = match typ {
+        "albums" => db_manager.get_album(&uri).await,
+        "tracks" => db_manager.get_track(&uri).await,
+        "artists" => db_manager.get_artist(&uri).await,
+        "playlists" => db_manager.get_playlist(&uri).await,
+        "episodes" => db_manager.get_episode(&uri).await,
+        "shows" => db_manager.get_show(&uri).await,
+        _ => return None,
+    };
+    result.ok().flatten()
+}
+
+// Builds a GET route for a single-item lookup by Spotify ID, e.g. "api/spt-fwd/tracks/{id}".
+// Serves from the SQLite cache when present; otherwise fetches live from Spotify and caches
+// the result (best-effort) for next time. `prefix` is the plural route segment ("tracks"),
+// `spotify_uri_type` is the singular form used in a spotify:<type>:<id> URI ("track").
+fn construct_lookup_by_id_route(
+    prefix: &'static str,
+    spotify_uri_type: &'static str,
+    api_proxies: Arc<RwLock<HashMap<u64, Arc<ApiProxy>>>>,
+    db_manager: Arc<DBManager>,
+    last_request_time: Arc<Mutex<Instant>>,
+    client_last_activity: Arc<Mutex<HashMap<u64, Instant>>>,
+) -> impl Filter<Extract = (warp::reply::WithStatus<warp::reply::Json>,), Error = Rejection> + Clone
+{
+    warp::path("api")
+        .and(warp::path("spt-fwd"))
+        .and(warp::path(prefix))
+        .and(warp::path::param::<String>())
+        .and(warp::path::end())
+        .and(warp::get())
+        .and(warp::query::<HashMap<String, String>>())
+        .and_then(move |item_id: String, query: HashMap<String, String>| {
+            let last_request_time = Arc::clone(&last_request_time);
+            let api_proxies = Arc::clone(&api_proxies);
+            let db_manager = Arc::clone(&db_manager);
+            let client_last_activity = Arc::clone(&client_last_activity);
+
+            async move {
+                update_last_request_time(&last_request_time).await;
+
+                let client_id = query.get("client_id").and_then(|s| s.parse::<u64>().ok());
+                let Some(client_id) = client_id else {
+                    error!(
+                        "Received call to route /api/spt-fwd/{}/{} without client_id.",
+                        prefix, item_id
+                    );
+                    return Ok::<_, warp::Rejection>(warp::reply::with_status(
+                        warp::reply::json(&serde_json::json!({})),
+                        warp::http::StatusCode::FORBIDDEN,
+                    ));
+                };
+
+                {
+                    let mut activity_map = client_last_activity.lock().await;
+                    activity_map.insert(client_id, Instant::now());
+                }
+
+                info!(
+                    "Received call to route /api/spt-fwd/{}/{} from client_id {}.",
+                    prefix, item_id, client_id
+                );
+
+                let proxy = {
+                    let proxies = api_proxies.read().await;
+                    proxies.get(&client_id).map(Arc::clone)
+                };
+                let Some(proxy) = proxy else {
+                    error!("No proxy found for client_id {}.", client_id);
+                    return Ok::<_, warp::Rejection>(warp::reply::with_status(
+                        warp::reply::json(&serde_json::json!({})),
+                        warp::http::StatusCode::FORBIDDEN,
+                    ));
+                };
+
+                let shortened_route = format!("{}/{}", prefix, item_id);
+
+                if let Some(cached_json) = try_db_cache(&db_manager, &shortened_route).await {
+                    return Ok::<_, warp::Rejection>(warp::reply::with_status(
+                        warp::reply::json(&cached_json),
+                        warp::http::StatusCode::OK,
+                    ));
+                }
+
+                let mut fwd_params = query.clone();
+                fwd_params.remove("client_id");
+
+                match proxy.get(&shortened_route, Some(fwd_params)).await {
+                    Ok((status, json)) => {
+                        if status == StatusCode::OK {
+                            let spotify_uri = format!("spotify:{}:{}", spotify_uri_type, item_id);
+                            if let Err(e) = db_manager.cache_item_from_api(&spotify_uri, &json).await
+                            {
+                                warn!("Failed to cache {} after live fetch: {}.", spotify_uri, e);
+                            }
+                        }
+                        Ok::<_, warp::Rejection>(warp::reply::with_status(
+                            warp::reply::json(&json),
+                            status,
+                        ))
+                    }
+                    Err(err) => Ok::<_, warp::Rejection>(warp::reply::with_status(
+                        warp::reply::json(&serde_json::json!({
+                            "error": format!("Error: {}", err)
+                        })),
+                        return_response_code(err),
+                    )),
+                }
+            }
+        })
+}
+
 fn construct_json_fwd_route_no_body(
     route_type: RouteType,
     full_route: &str,
@@ -120,67 +251,6 @@ fn construct_json_fwd_route_no_body(
     route_function: Option<RouteFunc>,
 ) -> impl Filter<Extract = (warp::reply::WithStatus<warp::reply::Json>,), Error = Rejection> + Clone
 {
-    // Helper: Map API endpoint to DB cache lookup
-    async fn try_db_cache(
-        db_manager: &Arc<DBManager>,
-        endpoint: &str,
-        query: &HashMap<String, String>,
-    ) -> Option<Value> {
-        // Only cache immutable item endpoints
-        // Example endpoints:
-        // "me/player/currently-playing" (track/episode)
-        // "me/player/queue" (track/episode list)
-        // "me/player/recently-played" (track/episode list)
-        // "albums/{id}", "tracks/{id}", "artists/{id}", "playlists/{id}", "episodes/{id}", "shows/{id}"
-        // For demo, handle "albums", "tracks", "artists", "playlists", "episodes", "shows"
-        let parts: Vec<&str> = endpoint.split('/').collect();
-        if parts.len() == 2 {
-            let (typ, id) = (parts[0], parts[1]);
-            let uri = match typ {
-                "albums" => format!("spotify:album:{}", id),
-                "tracks" => format!("spotify:track:{}", id),
-                "artists" => format!("spotify:artist:{}", id),
-                "playlists" => format!("spotify:playlist:{}", id),
-                "episodes" => format!("spotify:episode:{}", id),
-                "shows" => format!("spotify:show:{}", id),
-                _ => return None,
-            };
-            match typ {
-                "albums" => {
-                    if let Ok(Some(val)) = db_manager.get_album(&uri).await {
-                        return Some(val);
-                    }
-                }
-                "tracks" => {
-                    if let Ok(Some(val)) = db_manager.get_track(&uri).await {
-                        return Some(val);
-                    }
-                }
-                "artists" => {
-                    if let Ok(Some(val)) = db_manager.get_artist(&uri).await {
-                        return Some(val);
-                    }
-                }
-                "playlists" => {
-                    if let Ok(Some(val)) = db_manager.get_playlist(&uri).await {
-                        return Some(val);
-                    }
-                }
-                "episodes" => {
-                    if let Ok(Some(val)) = db_manager.get_episode(&uri).await {
-                        return Some(val);
-                    }
-                }
-                "shows" => {
-                    if let Ok(Some(val)) = db_manager.get_show(&uri).await {
-                        return Some(val);
-                    }
-                }
-                _ => {}
-            }
-        }
-        None
-    }
     let full_route = full_route.to_string();
     let path_parts: Vec<_> = full_route.split('/').map(String::from).collect();
     let mut route = warp::any().boxed();
@@ -257,7 +327,7 @@ fn construct_json_fwd_route_no_body(
 
                     // Try DB cache for GET requests to immutable items
                     let cache_hit = if route_type == RouteType::Get {
-                        try_db_cache(&db_manager, shortened_route, &query).await
+                        try_db_cache(&db_manager, shortened_route).await
                     } else {
                         None
                     };
@@ -557,6 +627,30 @@ pub fn routes(
                 Arc::clone(&last_request_time),
                 Arc::clone(&client_last_activity),
                 route_function_mapper(json_fwd_get_routes[0]),
+            )
+        })
+        .fold(api_routes, |acc, route| acc.or(route).unify().boxed());
+
+    // Single-item lookups by Spotify ID, e.g. "api/spt-fwd/tracks/{id}" — served from the
+    // SQLite cache when present, otherwise fetched live and cached for next time.
+    let lookup_by_id_routes: Vec<(&'static str, &'static str)> = vec![
+        ("tracks", "track"),
+        ("albums", "album"),
+        ("artists", "artist"),
+        ("episodes", "episode"),
+        ("shows", "show"),
+        ("playlists", "playlist"),
+    ];
+    let api_routes = lookup_by_id_routes
+        .into_iter()
+        .map(|(prefix, spotify_uri_type)| {
+            construct_lookup_by_id_route(
+                prefix,
+                spotify_uri_type,
+                Arc::clone(&api_proxies),
+                Arc::clone(&db_manager),
+                Arc::clone(&last_request_time),
+                Arc::clone(&client_last_activity),
             )
         })
         .fold(api_routes, |acc, route| acc.or(route).unify().boxed());

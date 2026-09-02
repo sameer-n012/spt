@@ -93,6 +93,7 @@ pub enum DBError {
     ConnectionError,
     SetupError,
     QueryError,
+    CacheParseError, // a live API response couldn't be mapped into a cacheable DB record
 }
 
 impl Display for DBError {
@@ -107,6 +108,9 @@ pub fn return_db_error_message(e: &DBError) -> String {
         DBError::ConnectionError => "Database connection error".to_string(),
         DBError::SetupError => "Database setup error".to_string(),
         DBError::QueryError => "The database query is invalid".to_string(),
+        DBError::CacheParseError => {
+            "Could not map an API response into a cacheable record".to_string()
+        }
     }
 }
 
