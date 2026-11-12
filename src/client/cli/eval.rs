@@ -1,4 +1,4 @@
-use crate::client::cli::parser::{Arg, CommandNode, ParseError};
+use crate::client::cli::parser::{Arg, CommandNode};
 use crate::client::core::playback_manager::PlaybackManager;
 use crate::client::local_api_proxy::ApiProxy;
 
@@ -25,14 +25,14 @@ async fn eval_simple(
         "pause" => ctx.playback_manager.pause().await,
         "next" => {
             let n = args_nf
-                .get(0)
+                .first()
                 .and_then(|s| s.parse::<u8>().ok())
                 .unwrap_or(1);
             ctx.playback_manager.next(n).await
         }
         "previous" => {
             let n = args_nf
-                .get(0)
+                .first()
                 .and_then(|s| s.parse::<u8>().ok())
                 .unwrap_or(1);
             ctx.playback_manager.previous(n).await
@@ -41,12 +41,12 @@ async fn eval_simple(
             if args_nf.is_empty() {
                 ctx.playback_manager.get_volume().await
             } else {
-                let level = args_nf.get(0).and_then(|s| s.parse::<u8>().ok());
+                let level = args_nf.first().and_then(|s| s.parse::<u8>().ok());
                 ctx.playback_manager.set_volume(level.unwrap_or(100)).await
             }
         }
         "device" => {
-            if let Some(name) = args_nf.get(0) {
+            if let Some(name) = args_nf.first() {
                 ctx.playback_manager.device(name).await
             } else {
                 Some("Device name is required".to_string())
@@ -71,7 +71,7 @@ async fn eval_simple(
         "recent" => {
             let h = args.contains(&"-h".to_string());
             let n = args_nf
-                .get(0)
+                .first()
                 .and_then(|s| s.parse::<u8>().ok())
                 .unwrap_or(20);
             ctx.playback_manager.recent(n, h).await
@@ -89,7 +89,7 @@ pub async fn eval(api_proxy: &mut ApiProxy, cmd: &CommandNode) -> Option<String>
 
 async fn eval_rec(ctx: &mut EvalContext<'_>, cmd: &CommandNode) -> Option<String> {
     let mut evaluated_args: Vec<String> = Vec::new();
-    for (i, arg) in cmd.args.iter().enumerate() {
+    for arg in cmd.args.iter() {
         match arg {
             Arg::Command(subcmd) => {
                 // Recursively evaluate subcommands

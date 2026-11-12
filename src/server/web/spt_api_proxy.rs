@@ -10,9 +10,7 @@ use std::collections::HashMap;
 use std::env;
 use std::iter;
 use std::sync::Arc;
-use std::time::Instant;
 use std::time::{Duration, SystemTime};
-use tokio::sync::Mutex;
 use tokio::sync::{Notify, RwLock};
 use url::Url;
 
@@ -39,8 +37,6 @@ pub struct ApiProxy {
     user_client_id: u64, // unique client id for each user, each user gets their own ApiProxy
     auth_info: RwLock<AuthInfo>,
     pub cb_auth_notifier: Arc<Notify>,
-
-    last_request_time: Arc<Mutex<Instant>>,
 
     db_manager: Arc<DBManager>, // used to cache/restore OAuth tokens across server restarts
 }
@@ -88,7 +84,6 @@ impl ApiProxy {
                 cb_auth_code: None,
             }),
             cb_auth_notifier: Arc::new(Notify::new()),
-            last_request_time: Arc::new(Mutex::new(Instant::now())),
 
             db_manager,
         };
@@ -146,7 +141,10 @@ impl ApiProxy {
     async fn persist_auth_tokens(&self) {
         let (access_token, refresh_token) = {
             let auth_info = self.auth_info.read().await;
-            (auth_info.access_token.clone(), auth_info.refresh_token.clone())
+            (
+                auth_info.access_token.clone(),
+                auth_info.refresh_token.clone(),
+            )
         };
 
         let Some(refresh_token) = refresh_token else {
@@ -294,7 +292,7 @@ impl ApiProxy {
             Err(_) => return Err(ApiError::RequestError),
         };
 
-        if let Err(_) = open::that(url) {
+        if open::that(url).is_err() {
             return Err(ApiError::BrowserError);
         }
 
@@ -564,7 +562,7 @@ impl ApiProxy {
         let request = self
             .client
             .get(&url)
-            .bearer_auth(access_token.ok_or_else(|| ApiError::NoAccessToken)?.0)
+            .bearer_auth(access_token.ok_or(ApiError::NoAccessToken)?.0)
             .query(&params.unwrap_or_default());
 
         let response = match request.send().await {
@@ -658,7 +656,7 @@ impl ApiProxy {
             .client
             .post(&url)
             .query(&params.unwrap_or_default())
-            .bearer_auth(access_token.ok_or_else(|| ApiError::NoAccessToken)?.0)
+            .bearer_auth(access_token.ok_or(ApiError::NoAccessToken)?.0)
             .json(&body.unwrap_or_default());
 
         let response = match request.send().await {
@@ -752,7 +750,7 @@ impl ApiProxy {
             .client
             .put(&url)
             .query(&params.unwrap_or_default())
-            .bearer_auth(access_token.ok_or_else(|| ApiError::NoAccessToken)?.0)
+            .bearer_auth(access_token.ok_or(ApiError::NoAccessToken)?.0)
             .json(&body.unwrap_or_default());
 
         let response = match request.send().await {
@@ -846,7 +844,7 @@ impl ApiProxy {
             .client
             .delete(&url)
             .query(&params.unwrap_or_default())
-            .bearer_auth(access_token.ok_or_else(|| ApiError::NoAccessToken)?.0)
+            .bearer_auth(access_token.ok_or(ApiError::NoAccessToken)?.0)
             .json(&body.unwrap_or_default());
 
         let response = match request.send().await {
@@ -908,11 +906,6 @@ impl ApiProxy {
             }
             _ => Err(errors::return_response_error(status)),
         }
-    }
-
-    async fn update_last_request_time(last_request_time: &Arc<Mutex<Instant>>) {
-        let mut last_time = last_request_time.lock().await;
-        *last_time = Instant::now();
     }
 
     // Example method to get devices (for demonstration purposes)

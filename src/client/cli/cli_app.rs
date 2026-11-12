@@ -1,7 +1,7 @@
 use crate::client::cli::eval::eval;
 use crate::client::cli::parser::{parse, tokenize, verify_command, verify_flags, ParseError};
 use crate::client::local_api_proxy::ApiProxy;
-use log::{debug, info};
+use log::debug;
 
 use std::collections::{HashMap, HashSet};
 // use crate::core::playlist_manager::PlaylistManager;

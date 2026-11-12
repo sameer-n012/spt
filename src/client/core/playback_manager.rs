@@ -1,11 +1,10 @@
 use crate::client::cli::formatter;
 use crate::client::local_api_proxy::ApiProxy;
-use serde_json::{json, Value};
+use serde_json::json;
 use std::collections::HashMap;
 
 #[derive(Debug)]
 pub struct PlaybackManager<'a> {
-    curr_device_name: Option<String>,
     device_list: HashMap<String, String>, // Maps device names to IDs
     api_manager: &'a mut ApiProxy,
 }
@@ -13,7 +12,6 @@ pub struct PlaybackManager<'a> {
 impl<'a> PlaybackManager<'a> {
     pub fn new(api_manager: &'a mut ApiProxy) -> Self {
         return PlaybackManager {
-            curr_device_name: None,
             device_list: HashMap::new(),
             api_manager,
         };
@@ -241,8 +239,7 @@ impl<'a> PlaybackManager<'a> {
             if status.as_u16() == 200 {
                 return Some(format!(
                     "Volume: {}% ({})",
-                    json["device"]["volume_percent"].to_string(),
-                    json["device"]["name"],
+                    json["device"]["volume_percent"], json["device"]["name"],
                 ));
             } else if status.as_u16() == 204 {
                 return Some("No devices found.".to_string());
@@ -382,7 +379,7 @@ impl<'a> PlaybackManager<'a> {
                     //     ));
 
                     // }
-                    if json["queue"].as_array().unwrap_or(&vec![]).len() == 0 {
+                    if json["queue"].as_array().unwrap_or(&vec![]).is_empty() {
                         q_list.push_str("\tNone\n");
                     }
                 } else {
@@ -392,7 +389,7 @@ impl<'a> PlaybackManager<'a> {
                             &json["currently_playing"],
                             1,
                         ));
-                        q_list.push_str("\n");
+                        q_list.push('\n');
                     }
                     q_list.push_str(&formatter::print_item_list(&json["queue"], 1));
                     // for item in json["queue"].as_array().unwrap_or(&vec![]) {
@@ -419,8 +416,8 @@ impl<'a> PlaybackManager<'a> {
         let n = uris.len();
         let mut results = Vec::with_capacity(n);
 
-        for i in 0..n {
-            let params = HashMap::from([("uris".to_string(), uris[i].clone())]);
+        for uri in &uris {
+            let params = HashMap::from([("uris".to_string(), uri.clone())]);
             let res = self
                 .api_manager
                 .post("api/spt-fwd/me/player/queue", None, Some(params))

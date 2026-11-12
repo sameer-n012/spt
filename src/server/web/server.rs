@@ -47,7 +47,7 @@ pub async fn start_server(
         db_manager: Arc::new(db_manager),
         api_proxies: Arc::new(RwLock::new(HashMap::new())),
         next_client_id: Arc::new(Mutex::new(1)),
-        last_request_time: last_request_time,
+        last_request_time,
         client_last_activity: Arc::clone(&client_last_activity),
     };
 
@@ -69,7 +69,7 @@ pub async fn start_server(
         handle_shutdown(
             // shutdown_rx,
             Arc::clone(&server_meta.last_request_time),
-            server_meta.inactivity_timeout.clone(),
+            server_meta.inactivity_timeout,
         ),
     );
 
@@ -78,7 +78,7 @@ pub async fn start_server(
         Arc::clone(&server_meta.api_proxies),
         Arc::clone(&server_meta.db_manager),
         Arc::clone(&server_meta.client_last_activity),
-        server_meta.inactivity_timeout.clone(),
+        server_meta.inactivity_timeout,
         Duration::from_secs(10),
     ));
 

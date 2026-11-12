@@ -41,6 +41,8 @@ pub fn get_uri_from_id(uri_type: &UriType, id: &str) -> Option<String> {
         UriType::Album => return Some(format!("spotify:album:{}", id)),
         UriType::Artist => return Some(format!("spotify:artist:{}", id)),
         UriType::Playlist => return Some(format!("spotify:playlist:{}", id)),
+        UriType::Episode => return Some(format!("spotify:episode:{}", id)),
+        UriType::Show => return Some(format!("spotify:show:{}", id)),
         _ => return None,
     }
 }
@@ -62,4 +64,49 @@ pub fn split_uris(uris: &str) -> Vec<String> {
         .split(',')
         .map(|s| s.trim().to_string())
         .collect();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn uri_type() {
+        assert!(matches!(get_uri_type("spotify:track:1"), UriType::Track));
+        assert!(matches!(get_uri_type("spotify:album:1"), UriType::Album));
+        assert!(matches!(get_uri_type("spotify:artist:1"), UriType::Artist));
+        assert!(matches!(
+            get_uri_type("spotify:playlist:1"),
+            UriType::Playlist
+        ));
+        assert!(matches!(
+            get_uri_type("spotify:episode:1"),
+            UriType::Episode
+        ));
+        assert!(matches!(get_uri_type("spotify:show:1"), UriType::Show));
+        assert!(matches!(get_uri_type("track:1"), UriType::Unknown));
+    }
+
+    #[test]
+    fn id_uri_url() {
+        assert_eq!(
+            get_id_from_uri("spotify:track:abc"),
+            Some("abc".to_string())
+        );
+        assert_eq!(get_id_from_uri("spotify:track"), None);
+        for t in [UriType::Track, UriType::Episode, UriType::Show] {
+            let uri = get_uri_from_id(&t, "abc").unwrap();
+            assert_eq!(get_id_from_uri(&uri), Some("abc".to_string()));
+        }
+        assert_eq!(get_uri_from_id(&UriType::Unknown, "abc"), None);
+        assert_eq!(
+            get_url_from_uri("spotify:album:abc"),
+            Some("https://open.spotify.com/album/abc".to_string())
+        );
+    }
+
+    #[test]
+    fn split() {
+        assert_eq!(split_uris(" a, b ,c "), vec!["a", "b", "c"]);
+    }
 }

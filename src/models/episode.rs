@@ -36,7 +36,7 @@ impl Episode {
         episode_record: serde_json::Value,
         episode_user_analytics_record: Option<serde_json::Value>,
     ) -> Result<Episode, DataParseError> {
-        let mut e = Episode {
+        let e = Episode {
             uri: episode_record["uri"]
                 .as_str()
                 .ok_or(DataParseError::FieldMissingError)?

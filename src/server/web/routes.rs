@@ -11,7 +11,7 @@ use warp::{Filter, Rejection, Reply};
 use crate::server::db::db_manager::DBManager;
 use crate::server::web::spt_api_proxy::ApiProxy;
 use crate::util::errors::return_response_code;
-use crate::util::errors::{ApiError, DBError};
+use crate::util::errors::ApiError;
 
 #[derive(Debug, Clone, Eq, PartialEq)]
 enum RouteType {
@@ -43,12 +43,14 @@ fn route_func_next<'a>(
             .post("me/player/next", body.cloned(), params.cloned())
             .await;
 
-        if res1.as_ref().map_or(false, |r| r.0 == StatusCode::OK)
-            && res2.as_ref().map_or(false, |r| r.0 == StatusCode::OK)
+        if res1.as_ref().is_ok_and(|r| r.0 == StatusCode::OK)
+            && res2.as_ref().is_ok_and(|r| r.0 == StatusCode::OK)
         {
             if let Some(user_id) = params.and_then(|p| p.get("user_id")).cloned() {
                 if let Some(uri) = res1.unwrap().1["item"]["uri"].as_str() {
-                    db_manager.increment_skip_count(user_id, uri.to_string());
+                    if let Err(e) = db_manager.increment_skip_count(user_id, uri.to_string()) {
+                        warn!("Failed to increment skip count for {}: {}.", uri, e);
+                    }
                 } else {
                     return Err(ApiError::ResponseDataError);
                 }
@@ -77,12 +79,14 @@ fn route_func_prev<'a>(
             .get("me/player/currently-playing", params.cloned())
             .await;
 
-        if res1.as_ref().map_or(false, |r| r.0 == StatusCode::OK)
-            && res2.as_ref().map_or(false, |r| r.0 == StatusCode::OK)
+        if res1.as_ref().is_ok_and(|r| r.0 == StatusCode::OK)
+            && res2.as_ref().is_ok_and(|r| r.0 == StatusCode::OK)
         {
             if let Some(user_id) = params.and_then(|p| p.get("user_id")).cloned() {
                 if let Some(uri) = res1.unwrap().1["item"]["uri"].as_str() {
-                    db_manager.increment_replay_count(user_id, uri.to_string());
+                    if let Err(e) = db_manager.increment_replay_count(user_id, uri.to_string()) {
+                        warn!("Failed to increment replay count for {}: {}.", uri, e);
+                    }
                 } else {
                     return Err(ApiError::ResponseDataError);
                 }
@@ -92,20 +96,6 @@ fn route_func_prev<'a>(
         }
 
         return res2;
-    }
-    .boxed()
-}
-
-fn route_func_now_playing<'a>(
-    proxy: &'a Arc<ApiProxy>,
-    db_manager: &'a Arc<DBManager>,
-    params: Option<&'a HashMap<String, String>>, // query parameters
-    body: Option<&'a Value>,                     // body
-) -> BoxFuture<'a, Result<(StatusCode, Value), ApiError>> {
-    async move {
-        proxy
-            .get("me/player/currently-playing", params.cloned())
-            .await
     }
     .boxed()
 }
@@ -220,7 +210,8 @@ fn construct_lookup_by_id_route(
                     Ok((status, json)) => {
                         if status == StatusCode::OK {
                             let spotify_uri = format!("spotify:{}:{}", spotify_uri_type, item_id);
-                            if let Err(e) = db_manager.cache_item_from_api(&spotify_uri, &json).await
+                            if let Err(e) =
+                                db_manager.cache_item_from_api(&spotify_uri, &json).await
                             {
                                 warn!("Failed to cache {} after live fetch: {}.", spotify_uri, e);
                             }
@@ -302,20 +293,17 @@ fn construct_json_fwd_route_no_body(
                     info!(
                         "Received call to route /{} from client_id {}.",
                         full_route,
-                        client_id.clone().unwrap()
+                        client_id.unwrap()
                     );
 
                     let proxy = if let Some(id) = client_id {
                         let proxies = api_proxies.read().await;
-                        proxies.get(&id).map(|p| Arc::clone(p))
+                        proxies.get(&id).map(Arc::clone)
                     } else {
                         None
                     };
                     if proxy.is_none() {
-                        error!(
-                            "No proxy found for client_id {}.",
-                            client_id.clone().unwrap()
-                        );
+                        error!("No proxy found for client_id {}.", client_id.unwrap());
                         return Ok::<_, warp::Rejection>(warp::reply::with_status(
                             warp::reply::json(&serde_json::json!({})),
                             warp::http::StatusCode::FORBIDDEN,
@@ -556,7 +544,7 @@ pub fn routes(
     client_last_activity: Arc<Mutex<HashMap<u64, Instant>>>,
 ) -> impl Filter<Extract = impl Reply, Error = Rejection> + Clone {
     // Define the routes
-    let json_fwd_get_routes = vec![
+    let json_fwd_get_routes = [
         "api/spt-fwd/me/player/currently-playing", // no db stuff
         "api/spt-fwd/me/player/devices",           // no db stuff
         "api/spt-fwd/me/player/queue",             // no db stuff
@@ -589,7 +577,7 @@ pub fn routes(
         })
         .fold(initial_route, |acc, route| acc.or(route).unify().boxed());
 
-    let json_fwd_put_routes = vec![
+    let json_fwd_put_routes = [
         "api/spt-fwd/me/player/play",  // no db stuff
         "api/spt-fwd/me/player/pause", // no db stuff
         "api/spt-fwd/me/player",       // no db stuff
@@ -609,7 +597,7 @@ pub fn routes(
         })
         .fold(api_routes, |acc, route| acc.or(route).unify().boxed());
 
-    let json_fwd_post_routes = vec![
+    let json_fwd_post_routes = [
         "api/spt-fwd/me/player/next",     // db mark song skipped (analytics)
         "api/spt-fwd/me/player/previous", // db mark songs replayed - need to get recent (analytics)
         "api/spt-fwd/me/player/seek",     // no db stuff
@@ -753,7 +741,7 @@ pub fn routes(
 
                     info!(
                         "Received call to route /auth/cb with client_id {}.",
-                        client_id.clone().unwrap()
+                        client_id.unwrap()
                     );
 
                     {
@@ -766,10 +754,7 @@ pub fn routes(
                         if let Some(p) = api_proxies.get(&client_id.unwrap()) {
                             Arc::clone(p)
                         } else {
-                            error!(
-                                "No proxy found for client_id {}.",
-                                client_id.clone().unwrap()
-                            );
+                            error!("No proxy found for client_id {}.", client_id.unwrap());
                             return Ok::<_, warp::Rejection>(warp::reply::html(
                                 "Sorry, something went wrong.",
                             ));
@@ -781,7 +766,7 @@ pub fn routes(
                     } else {
                         error!(
                             "No callback authorization code found for client_id {}.",
-                            client_id.clone().unwrap()
+                            client_id.unwrap()
                         );
                         return Ok::<_, warp::Rejection>(warp::reply::html(
                             "Sorry, something went wrong.",
@@ -790,7 +775,7 @@ pub fn routes(
 
                     info!(
                         "Set callback authorization code for client_id {}.",
-                        client_id.clone().unwrap()
+                        client_id.unwrap()
                     );
 
                     return Ok::<_, warp::Rejection>(warp::reply::html(

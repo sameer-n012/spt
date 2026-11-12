@@ -77,8 +77,8 @@ impl Playlist {
         query = query.bind(&self.user_id);
         query = query.bind(&self.name);
         query = query.bind(&self.description);
-        query = query.bind(&self.public);
-        query = query.bind(&self.collaborative);
+        query = query.bind(self.public);
+        query = query.bind(self.collaborative);
         query = query.bind(&self.snapshot_id);
         query
     }

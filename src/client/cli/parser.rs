@@ -128,7 +128,7 @@ fn read_quoted(chars: &mut Peekable<Chars>) -> Result<String, ParseError> {
     }
 
     let mut result = String::new();
-    while let Some(ch) = chars.next() {
+    for ch in chars.by_ref() {
         match ch {
             '"' => {
                 // closing quote
@@ -258,4 +258,101 @@ fn parse_rec(
 // Returns true if the given token text is in the recognized command list.
 fn is_recognized_command(txt: &str, command_list: &HashSet<String>) -> bool {
     command_list.contains(txt)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn flags() -> HashMap<String, Vec<String>> {
+        return HashMap::from([
+            ("now".to_string(), vec!["-h".to_string()]),
+            ("queue".to_string(), vec!["-h".to_string()]),
+            ("recent".to_string(), vec!["-h".to_string()]),
+            ("device".to_string(), vec![]),
+        ]);
+    }
+
+    fn commands() -> HashSet<String> {
+        return flags().into_keys().collect();
+    }
+
+    fn texts(tokens: &[Token]) -> Vec<&str> {
+        return tokens.iter().map(|t| t.text.as_str()).collect();
+    }
+
+    #[test]
+    fn tokenize_quotes_and_parens() {
+        let tokens = tokenize("queue (recent 5) \"a b\"").unwrap();
+        assert_eq!(
+            texts(&tokens),
+            ["queue", "(", "recent", "5", ")", "\"a b\""]
+        );
+        assert!(tokens[5].is_quoted && !tokens[0].is_quoted);
+        assert!(matches!(
+            tokenize("device \"a b"),
+            Err(ParseError::General(_))
+        ));
+    }
+
+    #[test]
+    fn verify_command_rejects_unknown_and_quoted() {
+        let cmds = commands();
+        assert!(verify_command(&tokenize("now").unwrap(), &cmds).is_ok());
+        assert!(matches!(
+            verify_command(&tokenize("foo").unwrap(), &cmds),
+            Err(ParseError::NoCommandFound)
+        ));
+        assert!(matches!(
+            verify_command(&tokenize("\"now\"").unwrap(), &cmds),
+            Err(ParseError::NoCommandFound)
+        ));
+        assert!(matches!(
+            verify_command(&[], &cmds),
+            Err(ParseError::UnexpectedEndOfInput)
+        ));
+    }
+
+    #[test]
+    fn parse_nested_commands() {
+        let cmds = commands();
+        let cmd = parse(&tokenize("queue (recent 5 -h) now").unwrap(), &cmds).unwrap();
+        assert_eq!(cmd.name, "queue");
+        assert_eq!(cmd.args.len(), 2);
+        match &cmd.args[0] {
+            Arg::Command(sub) => {
+                assert_eq!(sub.name, "recent");
+                assert!(
+                    matches!(&sub.args[..], [Arg::Text(a), Arg::Text(b)] if a == "5" && b == "-h")
+                );
+            }
+            _ => panic!("expected subcommand"),
+        }
+        assert!(matches!(&cmd.args[1], Arg::Command(sub) if sub.name == "now"));
+    }
+
+    #[test]
+    fn parse_errors() {
+        let cmds = commands();
+        assert!(matches!(
+            parse(&tokenize("queue (recent 5").unwrap(), &cmds),
+            Err(ParseError::MismatchedParentheses)
+        ));
+        assert!(matches!(
+            parse(&tokenize("now )").unwrap(), &cmds),
+            Err(ParseError::General(_))
+        ));
+    }
+
+    #[test]
+    fn verify_flags_per_command() {
+        let cmds = commands();
+        let ok = parse(&tokenize("queue -h (now -h)").unwrap(), &cmds).unwrap();
+        assert!(verify_flags(&ok, &flags()).is_ok());
+        let bad = parse(&tokenize("queue (device -h)").unwrap(), &cmds).unwrap();
+        assert!(matches!(
+            verify_flags(&bad, &flags()),
+            Err(ParseError::General(_))
+        ));
+    }
 }

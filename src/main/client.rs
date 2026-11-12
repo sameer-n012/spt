@@ -3,7 +3,6 @@ use dotenvy::dotenv;
 use fern::Dispatch;
 use log::{error, info, LevelFilter};
 use spt::client;
-use tokio;
 
 #[tokio::main]
 async fn main() {

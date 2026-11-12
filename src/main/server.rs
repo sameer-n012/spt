@@ -4,7 +4,6 @@ use fern::Dispatch;
 use log::{error, info, LevelFilter};
 use spt::server;
 use std::env;
-use tokio;
 
 #[tokio::main]
 async fn main() {

@@ -2,15 +2,12 @@ use crate::util::errors::DBError;
 use crate::util::uri_helper::{get_uri_type, UriType};
 use sqlx::Column;
 use sqlx::Row;
-use std::env;
-use std::fs;
-use std::path::Path;
 use std::str::FromStr;
 
-use sqlx::{
-    sqlite::{SqliteConnectOptions, SqliteConnection},
-    SqlitePool,
-};
+use sqlx::{sqlite::SqliteConnectOptions, SqlitePool};
+
+// schema embedded at compile time so the server does not depend on cwd
+const DB_SETUP_SQL: &str = include_str!("../../../scripts/sql/db_setup.sql");
 
 #[derive(Debug, Clone)]
 pub struct DBManager {
@@ -28,7 +25,7 @@ impl DBManager {
         }
     }
 
-    // --- DB Caching: Get/Insert Methods for Each Item Type ---
+    // DB Caching: Get/Insert Methods for Each Item Type
 
     pub async fn get_track(&self, uri: &str) -> Result<Option<serde_json::Value>, DBError> {
         let res = sqlx::query("SELECT * FROM tracks WHERE uri = $1")
@@ -483,13 +480,9 @@ impl DBManager {
             self.db_url.clone()
         };
 
-        let db_exists = Path::new(&self.db_url).exists();
-
-        let mut opts =
-            SqliteConnectOptions::from_str(&db_addr).map_err(|_| DBError::ConnectionError)?;
-        if !db_exists {
-            opts = opts.create_if_missing(true);
-        }
+        let opts = SqliteConnectOptions::from_str(&db_addr)
+            .map_err(|_| DBError::ConnectionError)?
+            .create_if_missing(true);
 
         let conn = SqlitePool::connect_with(opts)
             .await
@@ -497,15 +490,12 @@ impl DBManager {
 
         self.connection = Some(conn);
 
-        if !db_exists {
-            let setup_script = fs::read_to_string("scripts/sql/db_setup.sql")
-                .map_err(|_| DBError::SetupError)?;
-
-            let _ = sqlx::query(&setup_script)
-                .execute(self.connection.as_ref().unwrap())
-                .await
-                .map_err(|_| DBError::SetupError)?;
-        }
+        // runs on every start, contains only CREATE TABLE IF NOT EXISTS so safe
+        // & adds new tables to a DB file that was made with an older schema.
+        sqlx::query(DB_SETUP_SQL)
+            .execute(self.connection.as_ref().unwrap())
+            .await
+            .map_err(|_| DBError::SetupError)?;
 
         Ok(())
     }
@@ -665,7 +655,7 @@ impl DBManager {
         return Ok(count > 0);
     }
 
-    pub async fn update_track_information(&self, uri: &str) -> Result<(), DBError> {
+    pub async fn update_track_information(&self, _uri: &str) -> Result<(), DBError> {
         // TODO implement
         return Ok(());
     }
@@ -784,7 +774,7 @@ impl DBManager {
                 .await;
 
                 // if prev pos was small, we skipped the track
-                if prev_pos < 30000 && prev_uri != "" {
+                if prev_pos < 30000 && !prev_uri.is_empty() {
                     let t = get_uri_type(&prev_uri);
 
                     match t {
@@ -817,5 +807,38 @@ impl DBManager {
         }
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn setup_adds_missing_tables_to_existing_db() {
+        let path = std::env::temp_dir().join(format!("spt_setup_test_{}.db", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        let url = path.to_str().unwrap().to_string();
+
+        let mut db = DBManager::new(url.clone(), 0);
+        db.setup().await.unwrap();
+        let pool = db.connection.as_ref().unwrap();
+        sqlx::query("DROP TABLE cached_auth_tokens")
+            .execute(pool)
+            .await
+            .unwrap();
+        pool.close().await;
+
+        let mut db = DBManager::new(url.clone(), 0);
+        db.setup().await.unwrap();
+        db.setup().await.unwrap();
+        db.save_cached_auth_tokens("app", None, None, "refresh", 0)
+            .await
+            .unwrap();
+        let cached = db.load_cached_auth_tokens("app").await.unwrap();
+        assert_eq!(cached, Some((None, None, "refresh".to_string())));
+
+        db.connection.as_ref().unwrap().close().await;
+        let _ = std::fs::remove_file(&path);
     }
 }

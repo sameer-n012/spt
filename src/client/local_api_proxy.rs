@@ -1,48 +1,33 @@
 // use once_cell::sync::OnceCell;
-use crate::server::web::server::start_server;
 use crate::util::errors::{self, return_response_code, ApiError};
 use log::{debug, error, info};
 use reqwest::{Client, StatusCode};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::env;
-use std::process::Command;
-use std::time::Duration;
 
 #[derive(Debug)]
 pub struct ApiProxy {
     client: Client,
     client_id: Option<u64>,
     base_url: String,
-    server_port: u16,
-    server_timeout: Duration,
     max_server_retries: u8,
 }
 
 impl ApiProxy {
+    // TODO change later so we don't need #[allow]
+    #[allow(clippy::new_without_default)] // reads required env vars, not a sensible Default
     pub fn new() -> Self {
         let base_url = env::var("SPT_SERVER_BASE_URL").expect("SPT_SERVER_BASE_URL must be set");
         let max_server_retries = env::var("SPT_MAX_SERVER_RETRIES")
             .expect("SPT_MAX_SERVER_RETRIES must be set")
             .parse::<u8>()
             .unwrap();
-        let server_port = env::var("SPT_SERVER_PORT")
-            .expect("SPT_SERVER_PORT must be set")
-            .parse::<u16>()
-            .unwrap();
-        let server_timeout = Duration::from_secs(
-            env::var("SPT_SERVER_TIMEOUT_SECONDS")
-                .expect("SPT_SERVER_TIMEOUT_SECONDS must be set")
-                .parse::<u64>()
-                .unwrap(),
-        );
 
         let api_manager = ApiProxy {
             client: Client::new(),
             client_id: None,
             base_url,
-            server_port,
-            server_timeout,
             max_server_retries,
         };
 
@@ -148,10 +133,7 @@ impl ApiProxy {
         let url = format!("{}/{}", self.base_url, endpoint,);
 
         let mut q_params = params.clone().unwrap_or_default();
-        q_params.insert(
-            "client_id".to_string(),
-            self.client_id.clone().unwrap().to_string(),
-        );
+        q_params.insert("client_id".to_string(), self.client_id.unwrap().to_string());
 
         let request = self.client.get(&url).query(&q_params);
 
@@ -196,10 +178,7 @@ impl ApiProxy {
         let url = format!("{}/{}", self.base_url, endpoint);
 
         let mut q_params = params.clone().unwrap_or_default();
-        q_params.insert(
-            "client_id".to_string(),
-            self.client_id.clone().unwrap().to_string(),
-        );
+        q_params.insert("client_id".to_string(), self.client_id.unwrap().to_string());
 
         let request = self
             .client
@@ -248,10 +227,7 @@ impl ApiProxy {
         let url = format!("{}/{}", self.base_url, endpoint);
 
         let mut q_params = params.clone().unwrap_or_default();
-        q_params.insert(
-            "client_id".to_string(),
-            self.client_id.clone().unwrap().to_string(),
-        );
+        q_params.insert("client_id".to_string(), self.client_id.unwrap().to_string());
 
         let request = self
             .client
@@ -300,10 +276,7 @@ impl ApiProxy {
         let url = format!("{}/{}", self.base_url, endpoint);
 
         let mut q_params = params.clone().unwrap_or_default();
-        q_params.insert(
-            "client_id".to_string(),
-            self.client_id.clone().unwrap().to_string(),
-        );
+        q_params.insert("client_id".to_string(), self.client_id.unwrap().to_string());
 
         let request = self
             .client

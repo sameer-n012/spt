@@ -6,3 +6,5 @@
 logs/
 
 CLAUDE.md
+.claude/
+.mcp.json

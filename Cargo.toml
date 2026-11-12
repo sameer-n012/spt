@@ -31,3 +31,7 @@ log = "0.4"
 sqlx = { version = "0.8", features = ["runtime-tokio", "sqlite"] }
 futures = "0.3"
 datetime = { version = "0.4"}
+
+[lints.clippy]
+needless_return = "allow"
+uninlined_format_args = "allow"
