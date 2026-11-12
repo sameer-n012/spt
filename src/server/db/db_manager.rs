@@ -420,11 +420,19 @@ impl DBManager {
     }
 
     async fn cache_playlist_from_api(&self, json: &serde_json::Value) -> Result<(), DBError> {
-        let user_id = json["owner"]["id"].as_str().unwrap_or_default().to_string();
+        let owner_id = json["owner"]["id"].as_str().unwrap_or_default().to_string();
         let display_name = json["owner"]["display_name"]
             .as_str()
-            .unwrap_or(&user_id)
+            .unwrap_or(&owner_id)
             .to_string();
+
+        // a signed-in owner already has a row keyed by account_id, else key by spotify id
+        let user_id: String = sqlx::query_scalar("SELECT user_id FROM users WHERE spotify_id = $1")
+            .bind(&owner_id)
+            .fetch_optional(self.connection.as_ref().unwrap())
+            .await
+            .map_err(|_| DBError::QueryError)?
+            .unwrap_or(owner_id);
 
         // playlists.user_id has no other source of truth here; ensure a minimal placeholder
         // user row exists for the owner so caching a playlist doesn't depend on its owner ever
@@ -496,6 +504,54 @@ impl DBManager {
             .execute(self.connection.as_ref().unwrap())
             .await
             .map_err(|_| DBError::SetupError)?;
+
+        // users.spotify_id was added later, CREATE TABLE IF NOT EXISTS won't add it to old DBs
+        let has_spotify_id: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM pragma_table_info('users') WHERE name = 'spotify_id'",
+        )
+        .fetch_one(self.connection.as_ref().unwrap())
+        .await
+        .map_err(|_| DBError::SetupError)?;
+        if has_spotify_id == 0 {
+            sqlx::query("ALTER TABLE users ADD COLUMN spotify_id TEXT")
+                .execute(self.connection.as_ref().unwrap())
+                .await
+                .map_err(|_| DBError::SetupError)?;
+        }
+        sqlx::query("CREATE UNIQUE INDEX IF NOT EXISTS users_spotify_id ON users (spotify_id)")
+            .execute(self.connection.as_ref().unwrap())
+            .await
+            .map_err(|_| DBError::SetupError)?;
+
+        Ok(())
+    }
+
+    // upserts the signed-in user keyed by account_id
+    pub async fn save_signed_in_user(
+        &self,
+        account_id: &str,
+        spotify_id: &str,
+        display_name: &str,
+    ) -> Result<(), DBError> {
+        sqlx::query(
+            "INSERT INTO users (user_id, spotify_id, display_name) VALUES ($1, $2, $3) \
+                ON CONFLICT(user_id) DO UPDATE SET \
+                spotify_id = excluded.spotify_id, display_name = excluded.display_name",
+        )
+        .bind(account_id)
+        .bind(spotify_id)
+        .bind(display_name)
+        .execute(self.connection.as_ref().unwrap())
+        .await
+        .map_err(|_| DBError::QueryError)?;
+
+        // playlists cached before sign-in point at the owner placeholder row (keyed by spotify id)
+        sqlx::query("UPDATE playlists SET user_id = $1 WHERE user_id = $2")
+            .bind(account_id)
+            .bind(spotify_id)
+            .execute(self.connection.as_ref().unwrap())
+            .await
+            .map_err(|_| DBError::QueryError)?;
 
         Ok(())
     }
@@ -837,6 +893,69 @@ mod tests {
             .unwrap();
         let cached = db.load_cached_auth_tokens("app").await.unwrap();
         assert_eq!(cached, Some((None, None, "refresh".to_string())));
+
+        db.connection.as_ref().unwrap().close().await;
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[tokio::test]
+    async fn setup_adds_spotify_id_to_old_users_table() {
+        let path = std::env::temp_dir().join(format!("spt_users_test_{}.db", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        let url = path.to_str().unwrap().to_string();
+
+        // users table as created by the schema before spotify_id existed
+        let opts = SqliteConnectOptions::from_str(&url)
+            .unwrap()
+            .create_if_missing(true);
+        let pool = SqlitePool::connect_with(opts).await.unwrap();
+        sqlx::query("CREATE TABLE users (user_id TEXT PRIMARY KEY, display_name TEXT NOT NULL)")
+            .execute(&pool)
+            .await
+            .unwrap();
+        pool.close().await;
+
+        let mut db = DBManager::new(url, 0);
+        db.setup().await.unwrap();
+        db.setup().await.unwrap();
+        db.save_signed_in_user("acc", "sid", "Me").await.unwrap();
+
+        db.connection.as_ref().unwrap().close().await;
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[tokio::test]
+    async fn signed_in_user_owns_own_playlists() {
+        let path = std::env::temp_dir().join(format!("spt_owner_test_{}.db", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        let mut db = DBManager::new(path.to_str().unwrap().to_string(), 0);
+        db.setup().await.unwrap();
+
+        let playlist = |uri: &str| {
+            serde_json::json!({
+                "uri": uri, "name": "P", "public": true, "collaborative": false, "snapshot_id": "s",
+                "owner": {"id": "sid", "display_name": "Me"}
+            })
+        };
+        let owner = |uri: &str| {
+            sqlx::query_scalar::<_, String>("SELECT user_id FROM playlists WHERE uri = $1")
+                .bind(uri.to_string())
+                .fetch_one(db.connection.as_ref().unwrap())
+        };
+
+        // cached before sign-in: placeholder owner, then moved to the account row on sign-in
+        db.cache_playlist_from_api(&playlist("spotify:playlist:p1"))
+            .await
+            .unwrap();
+        assert_eq!(owner("spotify:playlist:p1").await.unwrap(), "sid");
+        db.save_signed_in_user("acc", "sid", "Me").await.unwrap();
+        assert_eq!(owner("spotify:playlist:p1").await.unwrap(), "acc");
+
+        // cached after sign-in: uses the account row directly
+        db.cache_playlist_from_api(&playlist("spotify:playlist:p2"))
+            .await
+            .unwrap();
+        assert_eq!(owner("spotify:playlist:p2").await.unwrap(), "acc");
 
         db.connection.as_ref().unwrap().close().await;
         let _ = std::fs::remove_file(&path);

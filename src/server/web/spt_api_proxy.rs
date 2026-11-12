@@ -37,7 +37,8 @@ pub struct ApiProxy {
     user_client_id: u64, // unique client id for each user, each user gets their own ApiProxy
     auth_info: RwLock<AuthInfo>,
     pub cb_auth_notifier: Arc<Notify>,
-    auth_lock: Mutex<()>, // stops concurrent auth/reauth flows
+    auth_lock: Mutex<()>,               // stops concurrent auth/reauth flows
+    account_id: RwLock<Option<String>>, // from GET /me, fetched on first use
 
     db_manager: Arc<DBManager>, // used to cache/restore OAuth tokens across server restarts
 }
@@ -109,6 +110,7 @@ impl ApiProxy {
             }),
             cb_auth_notifier: Arc::new(Notify::new()),
             auth_lock: Mutex::new(()),
+            account_id: RwLock::new(None),
 
             db_manager,
         };
@@ -197,6 +199,50 @@ impl ApiProxy {
                 self.user_client_id, e
             );
         }
+    }
+
+    // signed-in user's account_id, fetches GET /me and saves the users row on first call
+    pub async fn account_id(&self) -> Option<String> {
+        if let Some(id) = self.account_id.read().await.clone() {
+            return Some(id);
+        }
+
+        let json = match self.get("me", None).await {
+            Ok((StatusCode::OK, json)) => json,
+            res => {
+                warn!(
+                    "Client {} failed to get current user: {:?}.",
+                    self.user_client_id,
+                    res.map(|r| r.0)
+                );
+                return None;
+            }
+        };
+
+        let (Some(account_id), Some(spotify_id)) =
+            (json["account_id"].as_str(), json["id"].as_str())
+        else {
+            warn!(
+                "Client {} got current user without account_id/id.",
+                self.user_client_id
+            );
+            return None;
+        };
+        let display_name = json["display_name"].as_str().unwrap_or(spotify_id);
+
+        if let Err(e) = self
+            .db_manager
+            .save_signed_in_user(account_id, spotify_id, display_name)
+            .await
+        {
+            warn!(
+                "Client {} failed to save current user: {}.",
+                self.user_client_id, e
+            );
+        }
+
+        *self.account_id.write().await = Some(account_id.to_string());
+        return Some(account_id.to_string());
     }
 
     pub async fn set_cb_auth_code(&self, code: String) {

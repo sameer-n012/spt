@@ -1,5 +1,9 @@
+-- user_id is the spotify account_id for signed-in users, or the spotify user id for
+-- playlist owners that never signed in. spotify_id is only set for signed-in users.
+-- (db_manager.rs setup() adds spotify_id + its unique index to older DB files)
 CREATE TABLE IF NOT EXISTS users (
     user_id TEXT PRIMARY KEY,
+    spotify_id TEXT,
     display_name TEXT NOT NULL,
     refresh_token TEXT,
     refresh_token_expiry TIMESTAMP,

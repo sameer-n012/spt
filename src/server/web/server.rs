@@ -171,12 +171,12 @@ async fn periodic_update(
             }
             if let Some(item) = json.get("item") {
                 if let Some(uri) = item.get("uri").and_then(|u| u.as_str()) {
-                    if let Some(user_id) = item.get("user_id").and_then(|u| u.as_str()) {
+                    if let Some(user_id) = proxy.account_id().await {
                         let position = json
                             .get("progress_ms")
                             .and_then(|p| p.as_u64())
                             .unwrap_or(0) as i64;
-                        let _ = db_manager.update_now_playing(user_id, uri, position).await;
+                        let _ = db_manager.update_now_playing(&user_id, uri, position).await;
                     }
                 }
             }
