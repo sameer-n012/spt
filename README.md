@@ -6,15 +6,15 @@
 
 ### Features
 
-- [ ] Playback Control
+- [x] Playback Control
   - [x] Now Playing
-  - [ ] Play
-  - [ ] Pause
-  - [ ] Next
-  - [ ] Previous
+  - [x] Play
+  - [x] Pause
+  - [x] Next
+  - [x] Previous
   - [x] Show Volume
-  - [ ] Volume Control
-  - [ ] Device Selection
+  - [x] Volume Control
+  - [x] Device Selection
   - [x] Show Devices
 - [ ] Search
   - [ ] Song

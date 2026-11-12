@@ -1,6 +1,7 @@
 use crate::client::cli::parser::{Arg, CommandNode};
 use crate::client::core::playback_manager::PlaybackManager;
 use crate::client::local_api_proxy::ApiProxy;
+use log::debug;
 
 struct EvalContext<'a> {
     playback_manager: PlaybackManager<'a>,
@@ -18,7 +19,7 @@ async fn eval_simple(
         .map(|arg| arg.trim().trim_matches('"').to_string())
         .collect();
 
-    println!("Evaluating command: {} with args: {:?}\n", command, args_nf);
+    debug!("Evaluating command {} with args {:?}", command, args_nf);
 
     match command.as_str() {
         "play" => ctx.playback_manager.play().await,
@@ -42,12 +43,16 @@ async fn eval_simple(
                 ctx.playback_manager.get_volume().await
             } else {
                 let level = args_nf.first().and_then(|s| s.parse::<u8>().ok());
-                ctx.playback_manager.set_volume(level.unwrap_or(100)).await
+                match level {
+                    Some(level) if level <= 100 => ctx.playback_manager.set_volume(level).await,
+                    _ => Some("Volume level must be between 0 and 100".to_string()),
+                }
             }
         }
         "device" => {
-            if let Some(name) = args_nf.first() {
-                ctx.playback_manager.device(name).await
+            // shell strips quotes so a multi-word name is multiple args
+            if !args_nf.is_empty() {
+                ctx.playback_manager.device(&args_nf.join(" ")).await
             } else {
                 Some("Device name is required".to_string())
             }

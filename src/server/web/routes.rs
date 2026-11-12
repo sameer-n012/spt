@@ -264,7 +264,7 @@ fn construct_json_fwd_route_no_body(
         .and(warp::query::<HashMap<String, String>>())
         .and_then({
             let client_last_activity = Arc::clone(&client_last_activity);
-            move |query: HashMap<String, String>| {
+            move |mut query: HashMap<String, String>| {
                 let last_request_time = Arc::clone(&last_request_time);
                 let api_proxies = Arc::clone(&api_proxies);
                 let db_manager = Arc::clone(&db_manager);
@@ -275,7 +275,10 @@ fn construct_json_fwd_route_no_body(
                 async move {
                     update_last_request_time(&last_request_time).await;
 
-                    let client_id = query.get("client_id").and_then(|s| s.parse::<u64>().ok());
+                    // client_id is ours, don't forward it to spotify
+                    let client_id = query
+                        .remove("client_id")
+                        .and_then(|s| s.parse::<u64>().ok());
                     if client_id.is_none() {
                         error!("Received call to route /{} without client_id.", full_route);
                         return Ok::<_, warp::Rejection>(warp::reply::with_status(
@@ -412,7 +415,7 @@ fn construct_json_fwd_route_with_body(
             let full_route = full_route.clone();
             let route_type = route_type.clone();
 
-            move |query: HashMap<String, String>, body: serde_json::Value| {
+            move |mut query: HashMap<String, String>, body: serde_json::Value| {
                 let last_request_time = Arc::clone(&last_request_time);
                 let api_proxies = Arc::clone(&api_proxies);
                 let full_route = full_route.clone();
@@ -422,7 +425,10 @@ fn construct_json_fwd_route_with_body(
                 async move {
                     update_last_request_time(&last_request_time).await;
 
-                    let client_id = body["client_id"].as_u64();
+                    // client_id is ours, don't forward it to spotify
+                    let client_id = query
+                        .remove("client_id")
+                        .and_then(|s| s.parse::<u64>().ok());
                     if client_id.is_none() {
                         error!("Received call to route /{} without client_id.", full_route);
                         return Ok::<_, warp::Rejection>(warp::reply::with_status(
@@ -549,6 +555,7 @@ pub fn routes(
         "api/spt-fwd/me/player/devices",           // no db stuff
         "api/spt-fwd/me/player/queue",             // no db stuff
         "api/spt-fwd/me/player/recently-played",   // no db stuff
+        "api/spt-fwd/me/player",                   // no db stuff
     ];
 
     let initial_route = construct_json_fwd_route(
@@ -578,9 +585,11 @@ pub fn routes(
         .fold(initial_route, |acc, route| acc.or(route).unify().boxed());
 
     let json_fwd_put_routes = [
-        "api/spt-fwd/me/player/play",  // no db stuff
-        "api/spt-fwd/me/player/pause", // no db stuff
-        "api/spt-fwd/me/player",       // no db stuff
+        "api/spt-fwd/me/player/play",   // no db stuff
+        "api/spt-fwd/me/player/pause",  // no db stuff
+        "api/spt-fwd/me/player",        // no db stuff
+        "api/spt-fwd/me/player/seek",   // no db stuff
+        "api/spt-fwd/me/player/volume", // no db stuff
     ];
     let api_routes = json_fwd_put_routes
         .iter()
@@ -600,8 +609,6 @@ pub fn routes(
     let json_fwd_post_routes = [
         "api/spt-fwd/me/player/next",     // db mark song skipped (analytics)
         "api/spt-fwd/me/player/previous", // db mark songs replayed - need to get recent (analytics)
-        "api/spt-fwd/me/player/seek",     // no db stuff
-        "api/spt-fwd/me/player/volume",   // no db stuff
         "api/spt-fwd/me/player/queue",    // no db stuff
     ];
     let api_routes = json_fwd_post_routes
@@ -619,8 +626,7 @@ pub fn routes(
         })
         .fold(api_routes, |acc, route| acc.or(route).unify().boxed());
 
-    // Single-item lookups by Spotify ID, e.g. "api/spt-fwd/tracks/{id}" — served from the
-    // SQLite cache when present, otherwise fetched live and cached for next time.
+    //single-item lookups by spotify id, e.g. "api/spt-fwd/tracks/{id}"
     let lookup_by_id_routes: Vec<(&'static str, &'static str)> = vec![
         ("tracks", "track"),
         ("albums", "album"),
@@ -694,8 +700,8 @@ pub fn routes(
 
                 {
                     let proxy = ApiProxy::new(client_id_val, Arc::clone(&db_manager));
-                    // Restore a cached refresh/access token from a previous run, if any, so
-                    // dev/test iteration doesn't require going through browser auth every time.
+
+                    // restore a cached refresh/access token from a previous run
                     proxy.load_cached_auth().await;
 
                     let mut api_proxies = api_proxies.write().await;

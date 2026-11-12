@@ -1,6 +1,6 @@
 use crate::client::cli::formatter;
 use crate::client::local_api_proxy::ApiProxy;
-use serde_json::json;
+use serde_json::{json, Value};
 use std::collections::HashMap;
 
 #[derive(Debug)]
@@ -229,20 +229,18 @@ impl<'a> PlaybackManager<'a> {
     }
 
     pub async fn get_volume(&self) -> Option<String> {
-        let res = self
-            .api_manager
-            .get("api/spt-fwd/me/player/devices", None)
-            .await;
+        let res = self.api_manager.get("api/spt-fwd/me/player", None).await;
 
         if res.is_ok() {
             let (status, json) = res.unwrap();
             if status.as_u16() == 200 {
                 return Some(format!(
                     "Volume: {}% ({})",
-                    json["device"]["volume_percent"], json["device"]["name"],
+                    json["device"]["volume_percent"],
+                    json["device"]["name"].as_str().unwrap_or("null"),
                 ));
             } else if status.as_u16() == 204 {
-                return Some("No devices found.".to_string());
+                return Some("No active device.".to_string());
             } else if status.as_u16() == 401 || status.as_u16() == 403 {
                 return Some("User not authorized".to_string());
             } else if status.as_u16() == 429 {
@@ -308,9 +306,10 @@ impl<'a> PlaybackManager<'a> {
                 let mut devices_list = String::new();
                 if human_readable {
                     devices_list.push_str("Available Devices:\n");
-                    devices_list.push_str(&formatter::print_device_list_pretty(&json, 1));
+                    devices_list
+                        .push_str(&formatter::print_device_list_pretty(&json["devices"], 1));
                 } else {
-                    devices_list.push_str(&formatter::print_device_list(&json, 1));
+                    devices_list.push_str(&formatter::print_device_list(&json["devices"], 1));
                 }
 
                 if let Some(devices) = json["devices"].as_array() {
@@ -417,7 +416,7 @@ impl<'a> PlaybackManager<'a> {
         let mut results = Vec::with_capacity(n);
 
         for uri in &uris {
-            let params = HashMap::from([("uris".to_string(), uri.clone())]);
+            let params = HashMap::from([("uri".to_string(), uri.clone())]);
             let res = self
                 .api_manager
                 .post("api/spt-fwd/me/player/queue", None, Some(params))
@@ -478,6 +477,16 @@ impl<'a> PlaybackManager<'a> {
             if status.as_u16() == 200 {
                 let mut q_list = String::new();
 
+                // recently-played wraps each track as {track, played_at}
+                let tracks = Value::Array(
+                    json["items"]
+                        .as_array()
+                        .unwrap_or(&vec![])
+                        .iter()
+                        .map(|item| item["track"].clone())
+                        .collect(),
+                );
+
                 if human_readable {
                     q_list.push_str("Recently Played:\n");
                     // for item in json["items"].as_array().unwrap_or(&vec![]) {
@@ -491,17 +500,17 @@ impl<'a> PlaybackManager<'a> {
                     // if json["items"].as_array().unwrap_or(&vec![]).len() == 0 {
                     //     q_list.push_str("\tNone\n");
                     // }
-                    q_list.push_str(&formatter::print_item_list_pretty(&json, 1));
+                    q_list.push_str(&formatter::print_item_list_pretty(&tracks, 1));
                 } else {
                     // for item in json["items"].as_array().unwrap_or(&vec![]) {
                     //     q_list.push_str(&format!("{}\n", item["track"]["uri"]));
                     // }
-                    q_list.push_str(&formatter::print_item_list(&json, 1));
+                    q_list.push_str(&formatter::print_item_list(&tracks, 1));
                 }
 
                 return Some(q_list);
             } else if status.as_u16() == 204 {
-                return Some("No queue found.".to_string());
+                return Some("No recent tracks found.".to_string());
             } else if status.as_u16() == 401 || status.as_u16() == 403 {
                 return Some("User not authorized".to_string());
             } else if status.as_u16() == 429 {

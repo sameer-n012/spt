@@ -4,7 +4,9 @@
 .DS_Store
 
 logs/
+*.db
 
 CLAUDE.md
 .claude/
 .mcp.json
+docs/decisions

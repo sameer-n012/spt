@@ -160,8 +160,9 @@ async fn periodic_update(
     // let mut last_time = last_request_time.lock().await;
     // *last_time = Instant::now();
 
-    let proxies = api_proxies.read().await;
-    for (_id, proxy) in proxies.iter() {
+    // copy out so the map lock isn't held across api calls (would block /init)
+    let proxies: Vec<Arc<ApiProxy>> = api_proxies.read().await.values().cloned().collect();
+    for proxy in proxies.iter() {
         // info!("Checking now-playing status for client {}", _id);
         let res = proxy.get("me/player/currently-playing", None).await;
         if let Ok((status, json)) = res {

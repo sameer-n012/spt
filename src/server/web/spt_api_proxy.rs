@@ -11,7 +11,7 @@ use std::env;
 use std::iter;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
-use tokio::sync::{Notify, RwLock};
+use tokio::sync::{Mutex, Notify, RwLock};
 use url::Url;
 
 #[derive(Debug, Clone)]
@@ -37,8 +37,32 @@ pub struct ApiProxy {
     user_client_id: u64, // unique client id for each user, each user gets their own ApiProxy
     auth_info: RwLock<AuthInfo>,
     pub cb_auth_notifier: Arc<Notify>,
+    auth_lock: Mutex<()>, // stops concurrent auth/reauth flows
 
     db_manager: Arc<DBManager>, // used to cache/restore OAuth tokens across server restarts
+}
+
+// player commands (play, pause, next, ...) return 200 with an empty or plain-text id body,
+// not the 204 the spec says, so only json content types are parsed strictly
+async fn read_json(response: reqwest::Response) -> Result<Value, ApiError> {
+    let is_json = response
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|v| v.contains("json"));
+    let text = response
+        .text()
+        .await
+        .map_err(|_| ApiError::ResponseParseError)?;
+    if text.trim().is_empty() {
+        return Ok(serde_json::json!({}));
+    } else if !is_json {
+        return Ok(Value::String(text));
+    }
+    return serde_json::from_str(&text).map_err(|_| {
+        warn!("Failed to parse response body as json: {:.200}", text);
+        ApiError::ResponseParseError
+    });
 }
 
 fn systemtime_to_unix(t: SystemTime) -> i64 {
@@ -84,6 +108,7 @@ impl ApiProxy {
                 cb_auth_code: None,
             }),
             cb_auth_notifier: Arc::new(Notify::new()),
+            auth_lock: Mutex::new(()),
 
             db_manager,
         };
@@ -394,6 +419,9 @@ impl ApiProxy {
     }
 
     pub async fn validate_auth(&self) -> Result<StatusCode, ApiError> {
+        // one auth at a time, later callers see the new token
+        let _auth_guard = self.auth_lock.lock().await;
+
         let (at, rt) = {
             let auth_info = self.auth_info.read().await;
             (
@@ -587,7 +615,7 @@ impl ApiProxy {
         // match status code
         match status.as_u16() {
             200 => {
-                let json = match response.json::<Value>().await {
+                let json = match read_json(response).await {
                     Ok(data) => data,
                     Err(_) => {
                         return Err(ApiError::ResponseParseError);
@@ -681,7 +709,7 @@ impl ApiProxy {
         // match status code
         match status.as_u16() {
             200 => {
-                let json = match response.json::<Value>().await {
+                let json = match read_json(response).await {
                     Ok(data) => data,
                     Err(_) => {
                         return Err(ApiError::ResponseParseError);
@@ -775,7 +803,7 @@ impl ApiProxy {
         // match status code
         match status.as_u16() {
             200 => {
-                let json = match response.json::<Value>().await {
+                let json = match read_json(response).await {
                     Ok(data) => data,
                     Err(_) => {
                         return Err(ApiError::ResponseParseError);
@@ -869,7 +897,7 @@ impl ApiProxy {
         // match status code
         match status.as_u16() {
             200 => {
-                let json = match response.json::<Value>().await {
+                let json = match read_json(response).await {
                     Ok(data) => data,
                     Err(_) => {
                         return Err(ApiError::ResponseParseError);

@@ -2,7 +2,7 @@
 use crate::util::errors::{self, return_response_code, ApiError};
 use log::{debug, error, info};
 use reqwest::{Client, StatusCode};
-use serde_json::Value;
+use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::env;
 
@@ -184,7 +184,7 @@ impl ApiProxy {
             .client
             .post(&url)
             .query(&q_params)
-            .json(&body.unwrap_or_default());
+            .json(&body.unwrap_or(json!({})));
 
         let response = match request.send().await {
             Ok(res) => res,
@@ -233,7 +233,7 @@ impl ApiProxy {
             .client
             .put(&url)
             .query(&q_params)
-            .json(&body.unwrap_or_default());
+            .json(&body.unwrap_or(json!({})));
 
         let response = match request.send().await {
             Ok(res) => res,
@@ -282,7 +282,7 @@ impl ApiProxy {
             .client
             .delete(&url)
             .query(&q_params)
-            .json(&body.unwrap_or_default());
+            .json(&body.unwrap_or(json!({})));
 
         let response = match request.send().await {
             Ok(res) => res,

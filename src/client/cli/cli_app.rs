@@ -213,9 +213,9 @@ pub async fn run_cli(api_proxy: &mut ApiProxy, args: Vec<String>) {
     flags.insert("recent".to_string(), vec!["-h".to_string()]);
 
     let input = args[1..].join(" ");
-    let output = run(api_proxy, input, flags).await.unwrap_or(None);
-
-    if output.is_some() {
-        println!("{}", output.unwrap());
+    match run(api_proxy, input, flags).await {
+        Ok(Some(output)) => println!("{}", output),
+        Ok(None) => {}
+        Err(e) => eprintln!("Error: {}", e),
     }
 }

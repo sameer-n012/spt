@@ -31,6 +31,17 @@ pub enum ParseError {
     General(String),
 }
 
+impl std::fmt::Display for ParseError {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        match self {
+            ParseError::MismatchedParentheses => write!(f, "Mismatched parentheses"),
+            ParseError::UnexpectedEndOfInput => write!(f, "No command given"),
+            ParseError::NoCommandFound => write!(f, "Unknown command"),
+            ParseError::General(msg) => write!(f, "{}", msg),
+        }
+    }
+}
+
 // A token, with a flag indicating whether it was originally quoted or not.
 #[derive(Debug, Clone)]
 pub struct Token {
