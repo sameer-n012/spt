@@ -44,7 +44,8 @@ impl Artist {
     pub fn generate_insert_query(
         &self,
     ) -> Query<'_, sqlx::Sqlite, sqlx::sqlite::SqliteArguments<'_>> {
-        let query_str = "INSERT INTO artists (uri, name) VALUES (?, ?)";
+        let query_str = "INSERT INTO artists (uri, name) VALUES (?, ?) \
+            ON CONFLICT(uri) DO UPDATE SET name = excluded.name";
         let mut query = sqlx::query(query_str);
         query = query.bind(&self.uri);
         query = query.bind(&self.name);

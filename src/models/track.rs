@@ -243,7 +243,11 @@ impl Track {
         let query_str = "INSERT INTO tracks (uri, name, album_uri, track_number, disc_number, \
             duration_ms, explicit, popularity, acousticness, danceability, energy, instrumentalness, \
             liveness, loudness, speechiness, tempo, valence, time_signature, pitch_class_key) \
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) \
+            ON CONFLICT(uri) DO UPDATE SET name = excluded.name, album_uri = excluded.album_uri, \
+            track_number = excluded.track_number, disc_number = excluded.disc_number, \
+            duration_ms = excluded.duration_ms, explicit = excluded.explicit";
+        // re-caching only updates metadata, audio features stay as they are
         let mut query = sqlx::query(query_str);
         query = query.bind(&self.uri);
         query = query.bind(&self.name);

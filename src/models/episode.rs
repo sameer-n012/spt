@@ -171,7 +171,10 @@ impl Episode {
     pub fn generate_insert_query(
         &self,
     ) -> Query<'_, sqlx::Sqlite, sqlx::sqlite::SqliteArguments<'_>> {
-        let query_str = "INSERT INTO episodes (uri, name, show_uri, episode_number, release_date, description, duration_ms, explicit) VALUES (?, ?, ?, ?, ?, ?, ?, ?)";
+        let query_str = "INSERT INTO episodes (uri, name, show_uri, episode_number, release_date, description, duration_ms, explicit) VALUES (?, ?, ?, ?, ?, ?, ?, ?) \
+            ON CONFLICT(uri) DO UPDATE SET name = excluded.name, show_uri = excluded.show_uri, \
+            release_date = excluded.release_date, description = excluded.description, \
+            duration_ms = excluded.duration_ms, explicit = excluded.explicit";
         let mut query = sqlx::query(query_str);
         query = query.bind(&self.uri);
         query = query.bind(&self.name);

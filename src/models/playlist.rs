@@ -71,7 +71,10 @@ impl Playlist {
     pub fn generate_insert_query(
         &self,
     ) -> Query<'_, sqlx::Sqlite, sqlx::sqlite::SqliteArguments<'_>> {
-        let query_str = "INSERT INTO playlists (uri, user_id, name, description, public, collaborative, snapshot_id) VALUES (?, ?, ?, ?, ?, ?, ?)";
+        let query_str = "INSERT INTO playlists (uri, user_id, name, description, public, collaborative, snapshot_id) VALUES (?, ?, ?, ?, ?, ?, ?) \
+            ON CONFLICT(uri) DO UPDATE SET user_id = excluded.user_id, name = excluded.name, \
+            description = excluded.description, public = excluded.public, \
+            collaborative = excluded.collaborative, snapshot_id = excluded.snapshot_id";
         let mut query = sqlx::query(query_str);
         query = query.bind(&self.uri);
         query = query.bind(&self.user_id);

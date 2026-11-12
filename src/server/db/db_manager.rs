@@ -1,6 +1,5 @@
 use crate::util::errors::DBError;
-use crate::util::uri_helper::{get_uri_type, UriType};
-use sqlx::Column;
+use crate::util::uri_helper::{get_id_from_uri, get_uri_type, UriType};
 use sqlx::Row;
 use std::str::FromStr;
 
@@ -12,6 +11,18 @@ const DB_SETUP_SQL: &str = include_str!("../../../scripts/sql/db_setup.sql");
 // analytics thresholds (ms), positions come from the 10s now-playing poll
 const SKIP_MAX_MS: i64 = 30000; // left before this: skip, else play
 const REPLAY_MAX_MS: i64 = 10000; // same item back below this: replay
+
+// name, description, public, collaborative, snapshot_id, owner id, owner display name
+type PlaylistRow = (String, Option<String>, bool, bool, String, String, String);
+
+fn artist_json(uri: &str, name: &str) -> serde_json::Value {
+    return serde_json::json!({
+        "type": "artist",
+        "uri": uri,
+        "id": get_id_from_uri(uri),
+        "name": name,
+    });
+}
 
 #[derive(Debug, Clone)]
 pub struct DBManager {
@@ -30,25 +41,46 @@ impl DBManager {
     }
 
     // DB Caching: Get/Insert Methods for Each Item Type
+    // get_* rebuilds the spotify api response from the cache data
 
     pub async fn get_track(&self, uri: &str) -> Result<Option<serde_json::Value>, DBError> {
-        let res = sqlx::query("SELECT * FROM tracks WHERE uri = $1")
-            .bind(uri)
-            .fetch_optional(self.connection.as_ref().unwrap())
-            .await
-            .map_err(|_| DBError::QueryError)?;
-        Ok(res.map(|row| {
-            let mut obj = serde_json::Map::new();
-            for col in row.columns() {
-                let val: Result<serde_json::Value, _> = row
-                    .try_get(col.name())
-                    .map(|v: String| serde_json::Value::String(v));
-                if let Ok(v) = val {
-                    obj.insert(col.name().to_string(), v);
-                }
-            }
-            serde_json::Value::Object(obj)
-        }))
+        let row: Option<(String, String, i64, i64, i64, bool)> = sqlx::query_as(
+            "SELECT name, album_uri, track_number, disc_number, duration_ms, explicit \
+                FROM tracks WHERE uri = $1",
+        )
+        .bind(uri)
+        .fetch_optional(self.connection.as_ref().unwrap())
+        .await
+        .map_err(|_| DBError::QueryError)?;
+        let Some((name, album_uri, track_number, disc_number, duration_ms, explicit)) = row else {
+            return Ok(None);
+        };
+
+        // rowid keeps insert order (spotify order for main artist first)
+        let artists: Vec<(String, String)> = sqlx::query_as(
+            "SELECT a.uri, a.name FROM track_artists ta JOIN artists a ON a.uri = ta.artist_uri \
+                WHERE ta.track_uri = $1 ORDER BY ta.rowid",
+        )
+        .bind(uri)
+        .fetch_all(self.connection.as_ref().unwrap())
+        .await
+        .map_err(|_| DBError::QueryError)?;
+
+        return Ok(Some(serde_json::json!({
+            "type": "track",
+            "uri": uri,
+            "id": get_id_from_uri(uri),
+            "name": name,
+            "track_number": track_number,
+            "disc_number": disc_number,
+            "duration_ms": duration_ms,
+            "explicit": explicit,
+            "album": self.get_album(&album_uri).await?,
+            "artists": artists
+                .iter()
+                .map(|(uri, name)| artist_json(uri, name))
+                .collect::<Vec<_>>(),
+        })));
     }
 
     pub async fn insert_track(&self, track: &crate::models::track::Track) -> Result<(), DBError> {
@@ -61,23 +93,22 @@ impl DBManager {
     }
 
     pub async fn get_album(&self, uri: &str) -> Result<Option<serde_json::Value>, DBError> {
-        let res = sqlx::query("SELECT * FROM albums WHERE uri = $1")
-            .bind(uri)
-            .fetch_optional(self.connection.as_ref().unwrap())
-            .await
-            .map_err(|_| DBError::QueryError)?;
-        Ok(res.map(|row| {
-            let mut obj = serde_json::Map::new();
-            for col in row.columns() {
-                let val: Result<serde_json::Value, _> = row
-                    .try_get(col.name())
-                    .map(|v: String| serde_json::Value::String(v));
-                if let Ok(v) = val {
-                    obj.insert(col.name().to_string(), v);
-                }
-            }
-            serde_json::Value::Object(obj)
-        }))
+        let row: Option<(String, String, String)> =
+            sqlx::query_as("SELECT name, type, release_date FROM albums WHERE uri = $1")
+                .bind(uri)
+                .fetch_optional(self.connection.as_ref().unwrap())
+                .await
+                .map_err(|_| DBError::QueryError)?;
+        return Ok(row.map(|(name, album_type, release_date)| {
+            serde_json::json!({
+                "type": "album",
+                "uri": uri,
+                "id": get_id_from_uri(uri),
+                "name": name,
+                "album_type": album_type,
+                "release_date": release_date,
+            })
+        }));
     }
 
     pub async fn insert_album(&self, album: &crate::models::album::Album) -> Result<(), DBError> {
@@ -90,23 +121,12 @@ impl DBManager {
     }
 
     pub async fn get_artist(&self, uri: &str) -> Result<Option<serde_json::Value>, DBError> {
-        let res = sqlx::query("SELECT * FROM artists WHERE uri = $1")
+        let name: Option<String> = sqlx::query_scalar("SELECT name FROM artists WHERE uri = $1")
             .bind(uri)
             .fetch_optional(self.connection.as_ref().unwrap())
             .await
             .map_err(|_| DBError::QueryError)?;
-        Ok(res.map(|row| {
-            let mut obj = serde_json::Map::new();
-            for col in row.columns() {
-                let val: Result<serde_json::Value, _> = row
-                    .try_get(col.name())
-                    .map(|v: String| serde_json::Value::String(v));
-                if let Ok(v) = val {
-                    obj.insert(col.name().to_string(), v);
-                }
-            }
-            serde_json::Value::Object(obj)
-        }))
+        return Ok(name.map(|name| artist_json(uri, &name)));
     }
 
     pub async fn insert_artist(
@@ -122,23 +142,37 @@ impl DBManager {
     }
 
     pub async fn get_playlist(&self, uri: &str) -> Result<Option<serde_json::Value>, DBError> {
-        let res = sqlx::query("SELECT * FROM playlists WHERE uri = $1")
-            .bind(uri)
-            .fetch_optional(self.connection.as_ref().unwrap())
-            .await
-            .map_err(|_| DBError::QueryError)?;
-        Ok(res.map(|row| {
-            let mut obj = serde_json::Map::new();
-            for col in row.columns() {
-                let val: Result<serde_json::Value, _> = row
-                    .try_get(col.name())
-                    .map(|v: String| serde_json::Value::String(v));
-                if let Ok(v) = val {
-                    obj.insert(col.name().to_string(), v);
-                }
-            }
-            serde_json::Value::Object(obj)
-        }))
+
+        // owner id is the spotify id, users.user_id is the account_id
+        let row: Option<PlaylistRow> = sqlx::query_as(
+            "SELECT p.name, p.description, p.public, p.collaborative, p.snapshot_id, \
+                    COALESCE(u.spotify_id, u.user_id), u.display_name \
+                    FROM playlists p JOIN users u ON u.user_id = p.user_id WHERE p.uri = $1",
+        )
+        .bind(uri)
+        .fetch_optional(self.connection.as_ref().unwrap())
+        .await
+        .map_err(|_| DBError::QueryError)?;
+        return Ok(row.map(
+            |(name, description, public, collaborative, snapshot_id, owner_id, owner_name)| {
+                serde_json::json!({
+                    "type": "playlist",
+                    "uri": uri,
+                    "id": get_id_from_uri(uri),
+                    "name": name,
+                    "description": description,
+                    "public": public,
+                    "collaborative": collaborative,
+                    "snapshot_id": snapshot_id,
+                    "owner": {
+                        "type": "user",
+                        "uri": format!("spotify:user:{}", owner_id),
+                        "id": owner_id,
+                        "display_name": owner_name,
+                    },
+                })
+            },
+        ));
     }
 
     pub async fn insert_playlist(
@@ -154,23 +188,31 @@ impl DBManager {
     }
 
     pub async fn get_episode(&self, uri: &str) -> Result<Option<serde_json::Value>, DBError> {
-        let res = sqlx::query("SELECT * FROM episodes WHERE uri = $1")
-            .bind(uri)
-            .fetch_optional(self.connection.as_ref().unwrap())
-            .await
-            .map_err(|_| DBError::QueryError)?;
-        Ok(res.map(|row| {
-            let mut obj = serde_json::Map::new();
-            for col in row.columns() {
-                let val: Result<serde_json::Value, _> = row
-                    .try_get(col.name())
-                    .map(|v: String| serde_json::Value::String(v));
-                if let Ok(v) = val {
-                    obj.insert(col.name().to_string(), v);
-                }
-            }
-            serde_json::Value::Object(obj)
-        }))
+
+        // episode_number is left out, spotify doesn't have it (always 0 when cached)
+        let row: Option<(String, String, String, Option<String>, i64, bool)> = sqlx::query_as(
+            "SELECT name, show_uri, release_date, description, duration_ms, explicit \
+                FROM episodes WHERE uri = $1",
+        )
+        .bind(uri)
+        .fetch_optional(self.connection.as_ref().unwrap())
+        .await
+        .map_err(|_| DBError::QueryError)?;
+        let Some((name, show_uri, release_date, description, duration_ms, explicit)) = row else {
+            return Ok(None);
+        };
+
+        return Ok(Some(serde_json::json!({
+            "type": "episode",
+            "uri": uri,
+            "id": get_id_from_uri(uri),
+            "name": name,
+            "release_date": release_date,
+            "description": description,
+            "duration_ms": duration_ms,
+            "explicit": explicit,
+            "show": self.get_show(&show_uri).await?,
+        })));
     }
 
     pub async fn insert_episode(
@@ -186,23 +228,22 @@ impl DBManager {
     }
 
     pub async fn get_show(&self, uri: &str) -> Result<Option<serde_json::Value>, DBError> {
-        let res = sqlx::query("SELECT * FROM shows WHERE uri = $1")
-            .bind(uri)
-            .fetch_optional(self.connection.as_ref().unwrap())
-            .await
-            .map_err(|_| DBError::QueryError)?;
-        Ok(res.map(|row| {
-            let mut obj = serde_json::Map::new();
-            for col in row.columns() {
-                let val: Result<serde_json::Value, _> = row
-                    .try_get(col.name())
-                    .map(|v: String| serde_json::Value::String(v));
-                if let Ok(v) = val {
-                    obj.insert(col.name().to_string(), v);
-                }
-            }
-            serde_json::Value::Object(obj)
-        }))
+        let row: Option<(String, String, Option<String>)> =
+            sqlx::query_as("SELECT name, publisher, description FROM shows WHERE uri = $1")
+                .bind(uri)
+                .fetch_optional(self.connection.as_ref().unwrap())
+                .await
+                .map_err(|_| DBError::QueryError)?;
+        return Ok(row.map(|(name, publisher, description)| {
+            serde_json::json!({
+                "type": "show",
+                "uri": uri,
+                "id": get_id_from_uri(uri),
+                "name": name,
+                "publisher": publisher,
+                "description": description,
+            })
+        }));
     }
 
     pub async fn insert_show(&self, show: &crate::models::show::Show) -> Result<(), DBError> {
@@ -329,7 +370,7 @@ impl DBManager {
             for artist_json in artists {
                 if let Some(artist_uri) = artist_json["uri"].as_str() {
                     let _ = sqlx::query(
-                        "INSERT INTO track_artists (track_uri, artist_uri) VALUES ($1, $2)",
+                        "INSERT OR IGNORE INTO track_artists (track_uri, artist_uri) VALUES ($1, $2)",
                     )
                     .bind(&track.uri)
                     .bind(artist_uri)
@@ -661,7 +702,6 @@ impl DBManager {
         uri: &str,
         position: i64,
     ) -> Result<(), DBError> {
-
         // last seen item/position for this user, None on first poll
         let prev: Option<(String, i64)> =
             sqlx::query_as("SELECT item_uri, position FROM play_history WHERE user_id = $1")
@@ -685,7 +725,6 @@ impl DBManager {
         .map_err(|_| DBError::QueryError)?;
 
         match prev {
-
             // same item jumped back near the start: replayed
             Some((prev_uri, prev_pos))
                 if prev_uri == uri && position < REPLAY_MAX_MS && position < prev_pos =>
@@ -847,6 +886,93 @@ mod tests {
         };
         assert_eq!(counts("spotify:track:t1").await.unwrap(), (1, 0, 0));
         assert_eq!(counts("spotify:track:t2").await.unwrap(), (0, 1, 1));
+
+        db.connection.as_ref().unwrap().close().await;
+        let _ = std::fs::remove_file(&path);
+    }
+
+    // every field the cache returns must equal the live response's field/type
+    fn assert_subset(cached: &serde_json::Value, live: &serde_json::Value, path: &str) {
+        match (cached, live) {
+            (serde_json::Value::Object(c), serde_json::Value::Object(l)) => {
+                for (k, v) in c {
+                    assert!(l.contains_key(k), "{}.{} not in live response", path, k);
+                    assert_subset(v, &l[k], &format!("{}.{}", path, k));
+                }
+            }
+            (serde_json::Value::Array(c), serde_json::Value::Array(l)) => {
+                assert_eq!(c.len(), l.len(), "{} length", path);
+                for (i, (c, l)) in c.iter().zip(l).enumerate() {
+                    assert_subset(c, l, &format!("{}[{}]", path, i));
+                }
+            }
+            _ => assert_eq!(cached, live, "{}", path),
+        }
+    }
+
+    #[tokio::test]
+    async fn cached_items_match_spotify_shape() {
+        let path = std::env::temp_dir().join(format!("spt_shape_test_{}.db", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        let mut db = DBManager::new(path.to_str().unwrap().to_string(), 0);
+        db.setup().await.unwrap();
+
+        let artist = |id: &str| {
+            serde_json::json!({"type": "artist", "uri": format!("spotify:artist:{}", id),
+                "id": id, "name": id.to_uppercase(), "href": "x"})
+        };
+        let mut track = serde_json::json!({
+            "type": "track", "uri": "spotify:track:t", "id": "t", "name": "Song",
+            "track_number": 3, "disc_number": 1, "duration_ms": 200000, "explicit": true,
+            "popularity": 50, "is_local": false,
+            "album": {"type": "album", "uri": "spotify:album:a", "id": "a", "name": "Album",
+                      "album_type": "single", "release_date": "2020-01-01", "total_tracks": 1},
+            "artists": [artist("main"), artist("feat")]
+        });
+        db.cache_item_from_api("spotify:track:t", &track)
+            .await
+            .unwrap();
+        let cached = db.get_track("spotify:track:t").await.unwrap().unwrap();
+        assert_subset(&cached, &track, "track");
+        assert_eq!(cached["artists"][0]["name"], "MAIN");
+
+        // recaching updates the row
+        track["name"] = "Song (Remastered)".into();
+        db.cache_item_from_api("spotify:track:t", &track)
+            .await
+            .unwrap();
+        let cached = db.get_track("spotify:track:t").await.unwrap().unwrap();
+        assert_subset(&cached, &track, "track");
+
+        let episode = serde_json::json!({
+            "type": "episode", "uri": "spotify:episode:e", "id": "e", "name": "Ep",
+            "release_date": "2021-02-03", "description": "D", "duration_ms": 3600000,
+            "explicit": false,
+            "show": {"type": "show", "uri": "spotify:show:s", "id": "s", "name": "Show",
+                     "publisher": "Pub", "description": "SD"}
+        });
+        db.cache_item_from_api("spotify:episode:e", &episode)
+            .await
+            .unwrap();
+        let cached = db.get_episode("spotify:episode:e").await.unwrap().unwrap();
+        assert_subset(&cached, &episode, "episode");
+
+        // signed-in user: spotify returns the spotify id, not our account_id
+        db.save_signed_in_user("acc", "sid", "Me").await.unwrap();
+        let playlist = serde_json::json!({
+            "type": "playlist", "uri": "spotify:playlist:p", "id": "p", "name": "P",
+            "description": null, "public": false, "collaborative": false, "snapshot_id": "s",
+            "owner": {"type": "user", "uri": "spotify:user:sid", "id": "sid", "display_name": "Me"}
+        });
+        db.cache_item_from_api("spotify:playlist:p", &playlist)
+            .await
+            .unwrap();
+        let cached = db
+            .get_playlist("spotify:playlist:p")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_subset(&cached, &playlist, "playlist");
 
         db.connection.as_ref().unwrap().close().await;
         let _ = std::fs::remove_file(&path);

@@ -56,7 +56,9 @@ impl Album {
     pub fn generate_insert_query(
         &self,
     ) -> Query<'_, sqlx::Sqlite, sqlx::sqlite::SqliteArguments<'_>> {
-        let query_str = "INSERT INTO albums (uri, name, type, release_date) VALUES (?, ?, ?, ?)";
+        let query_str = "INSERT INTO albums (uri, name, type, release_date) VALUES (?, ?, ?, ?) \
+            ON CONFLICT(uri) DO UPDATE SET name = excluded.name, type = excluded.type, \
+            release_date = excluded.release_date";
         let mut query = sqlx::query(query_str);
         query = query.bind(&self.uri);
         query = query.bind(&self.name);
