@@ -1,5 +1,6 @@
-use log::info;
-use std::collections::HashMap;
+use log::{info, warn};
+use reqwest::StatusCode;
+use std::collections::{HashMap, HashSet};
 use std::env;
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -162,24 +163,38 @@ async fn periodic_update(
 
     // copy out so the map lock isn't held across api calls (would block /init)
     let proxies: Vec<Arc<ApiProxy>> = api_proxies.read().await.values().cloned().collect();
+
+    // every cli run has its own proxy, poll each account once or plays get counted repeatedly
+    let mut polled = HashSet::new();
+    let params = HashMap::from([("additional_types".to_string(), "track,episode".to_string())]);
     for proxy in proxies.iter() {
-        // info!("Checking now-playing status for client {}", _id);
-        let res = proxy.get("me/player/currently-playing", None).await;
-        if let Ok((status, json)) = res {
-            if status != 200 {
-                continue;
+        let Some(user_id) = proxy.account_id().await else {
+            continue;
+        };
+        if !polled.insert(user_id.clone()) {
+            continue;
+        }
+
+        let Ok((StatusCode::OK, json)) = proxy
+            .get("me/player/currently-playing", Some(params.clone()))
+            .await
+        else {
+            continue;
+        };
+        let Some(uri) = json["item"]["uri"].as_str() else {
+            continue;
+        };
+
+        // analytics rows reference tracks/episodes, so cache the item first
+        if !db_manager.check_item_in_db(uri).await.unwrap_or(true) {
+            if let Err(e) = db_manager.cache_item_from_api(uri, &json["item"]).await {
+                warn!("Failed to cache now playing item {}: {}.", uri, e);
             }
-            if let Some(item) = json.get("item") {
-                if let Some(uri) = item.get("uri").and_then(|u| u.as_str()) {
-                    if let Some(user_id) = proxy.account_id().await {
-                        let position = json
-                            .get("progress_ms")
-                            .and_then(|p| p.as_u64())
-                            .unwrap_or(0) as i64;
-                        let _ = db_manager.update_now_playing(&user_id, uri, position).await;
-                    }
-                }
-            }
+        }
+
+        let position = json["progress_ms"].as_i64().unwrap_or(0);
+        if let Err(e) = db_manager.update_now_playing(&user_id, uri, position).await {
+            warn!("Failed to update now playing for {}: {}.", uri, e);
         }
     }
 }

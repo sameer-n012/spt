@@ -1,4 +1,4 @@
-use futures::future::{BoxFuture, FutureExt};
+use futures::future::BoxFuture;
 use log::{debug, error, info, warn};
 use reqwest::StatusCode;
 use serde_json::Value;
@@ -27,78 +27,6 @@ type RouteFunc = for<'a> fn(
     Option<&'a HashMap<String, String>>, // query parameters
     Option<&'a Value>,                   // body
 ) -> BoxFuture<'a, Result<(StatusCode, Value), ApiError>>;
-
-fn route_func_next<'a>(
-    proxy: &'a Arc<ApiProxy>,
-    db_manager: &'a Arc<DBManager>,
-    params: Option<&'a HashMap<String, String>>, // query parameters
-    body: Option<&'a Value>,                     // body
-) -> BoxFuture<'a, Result<(StatusCode, Value), ApiError>> {
-    async move {
-        let res1 = proxy
-            .get("me/player/currently-playing", params.cloned())
-            .await;
-
-        let res2 = proxy
-            .post("me/player/next", body.cloned(), params.cloned())
-            .await;
-
-        if res1.as_ref().is_ok_and(|r| r.0 == StatusCode::OK)
-            && res2.as_ref().is_ok_and(|r| r.0 == StatusCode::OK)
-        {
-            if let Some(user_id) = params.and_then(|p| p.get("user_id")).cloned() {
-                if let Some(uri) = res1.unwrap().1["item"]["uri"].as_str() {
-                    if let Err(e) = db_manager.increment_skip_count(user_id, uri.to_string()) {
-                        warn!("Failed to increment skip count for {}: {}.", uri, e);
-                    }
-                } else {
-                    return Err(ApiError::ResponseDataError);
-                }
-            } else {
-                return Err(ApiError::RequestError);
-            }
-        }
-
-        return res2;
-    }
-    .boxed()
-}
-
-fn route_func_prev<'a>(
-    proxy: &'a Arc<ApiProxy>,
-    db_manager: &'a Arc<DBManager>,
-    params: Option<&'a HashMap<String, String>>, // query parameters
-    body: Option<&'a Value>,                     // body
-) -> BoxFuture<'a, Result<(StatusCode, Value), ApiError>> {
-    async move {
-        let res2 = proxy
-            .post("me/player/previous", body.cloned(), params.cloned())
-            .await;
-
-        let res1 = proxy
-            .get("me/player/currently-playing", params.cloned())
-            .await;
-
-        if res1.as_ref().is_ok_and(|r| r.0 == StatusCode::OK)
-            && res2.as_ref().is_ok_and(|r| r.0 == StatusCode::OK)
-        {
-            if let Some(user_id) = params.and_then(|p| p.get("user_id")).cloned() {
-                if let Some(uri) = res1.unwrap().1["item"]["uri"].as_str() {
-                    if let Err(e) = db_manager.increment_replay_count(user_id, uri.to_string()) {
-                        warn!("Failed to increment replay count for {}: {}.", uri, e);
-                    }
-                } else {
-                    return Err(ApiError::ResponseDataError);
-                }
-            } else {
-                return Err(ApiError::RequestError);
-            }
-        }
-
-        return res2;
-    }
-    .boxed()
-}
 
 // Looks up a cacheable single-item endpoint ("albums/{id}", "tracks/{id}", etc.) in the local
 // SQLite cache. Returns None on a cache miss (or for any endpoint that isn't cacheable), in
@@ -607,8 +535,8 @@ pub fn routes(
         .fold(api_routes, |acc, route| acc.or(route).unify().boxed());
 
     let json_fwd_post_routes = [
-        "api/spt-fwd/me/player/next",     // db mark song skipped (analytics)
-        "api/spt-fwd/me/player/previous", // db mark songs replayed - need to get recent (analytics)
+        "api/spt-fwd/me/player/next",     // no db stuff
+        "api/spt-fwd/me/player/previous", // no db stuff
         "api/spt-fwd/me/player/queue",    // no db stuff
     ];
     let api_routes = json_fwd_post_routes
@@ -799,12 +727,10 @@ pub fn routes(
         .or(root_route);
 }
 
-fn route_function_mapper(full_route: &str) -> Option<RouteFunc> {
-    match full_route {
-        "api/spt-fwd/me/player/next" => Some(route_func_next),
-        "api/spt-fwd/me/player/previous" => Some(route_func_prev),
-        _ => None,
-    }
+// no route needs a custom function now: play/skip/replay analytics come from the
+// now-playing poll in server.rs which also sees changes made in other apps
+fn route_function_mapper(_full_route: &str) -> Option<RouteFunc> {
+    return None;
 }
 
 async fn update_last_request_time(last_request_time: &Arc<Mutex<Instant>>) {

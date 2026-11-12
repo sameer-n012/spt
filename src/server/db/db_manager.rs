@@ -9,6 +9,10 @@ use sqlx::{sqlite::SqliteConnectOptions, SqlitePool};
 // schema embedded at compile time so the server does not depend on cwd
 const DB_SETUP_SQL: &str = include_str!("../../../scripts/sql/db_setup.sql");
 
+// analytics thresholds (ms), positions come from the 10s now-playing poll
+const SKIP_MAX_MS: i64 = 30000; // left before this: skip, else play
+const REPLAY_MAX_MS: i64 = 10000; // same item back below this: replay
+
 #[derive(Debug, Clone)]
 pub struct DBManager {
     connection: Option<SqlitePool>,
@@ -556,131 +560,30 @@ impl DBManager {
         Ok(())
     }
 
-    pub fn increment_play_count(&self, user_id: String, uri: String) -> Result<(), DBError> {
-        let t = get_uri_type(&uri);
-
-        let conn = match &self.connection {
-            Some(c) => c,
-            None => return Err(DBError::ConnectionError),
+    // counter is one of play_count, skip_count, replay_count
+    async fn increment_count(
+        &self,
+        user_id: &str,
+        uri: &str,
+        counter: &'static str,
+    ) -> Result<(), DBError> {
+        let (table, uri_col) = match get_uri_type(uri) {
+            UriType::Track => ("user_track_analytics", "track_uri"),
+            UriType::Episode => ("user_track_episode_analytics", "episode_uri"),
+            _ => return Err(DBError::InvalidURI),
         };
 
-        match t {
-            UriType::Track => {
-                futures::executor::block_on(async {
-                    sqlx::query(
-                        "UPDATE user_track_analytics SET play_count = play_count + 1 \
-                        WHERE user_id = $1 AND track_uri = $2",
-                    )
-                    .bind(&user_id)
-                    .bind(&uri)
-                    .execute(conn)
-                    .await
-                    .map_err(|_| DBError::QueryError)
-                })?;
-            }
-            UriType::Episode => {
-                futures::executor::block_on(async {
-                    sqlx::query(
-                        "UPDATE user_track_episode_analytics SET play_count = play_count + 1 \
-                        WHERE user_id = $1 AND episode_uri = $2",
-                    )
-                    .bind(&user_id)
-                    .bind(&uri)
-                    .execute(conn)
-                    .await
-                    .map_err(|_| DBError::QueryError)
-                })?;
-            }
-            _ => {
-                return Err(DBError::InvalidURI);
-            }
-        }
-
-        Ok(())
-    }
-
-    pub fn increment_skip_count(&self, user_id: String, uri: String) -> Result<(), DBError> {
-        let t = get_uri_type(&uri);
-
-        let conn = match &self.connection {
-            Some(c) => c,
-            None => return Err(DBError::ConnectionError),
-        };
-
-        match t {
-            UriType::Track => {
-                futures::executor::block_on(async {
-                    sqlx::query(
-                        "UPDATE user_track_analytics SET skip_count = skip_count + 1 \
-                        WHERE user_id = $1 AND track_uri = $2",
-                    )
-                    .bind(&user_id)
-                    .bind(&uri)
-                    .execute(conn)
-                    .await
-                    .map_err(|_| DBError::QueryError)
-                })?;
-            }
-            UriType::Episode => {
-                futures::executor::block_on(async {
-                    sqlx::query(
-                        "UPDATE user_track_episode_analytics SET skip_count = skip_count + 1 \
-                        WHERE user_id = $1 AND episode_uri = $2",
-                    )
-                    .bind(&user_id)
-                    .bind(&uri)
-                    .execute(conn)
-                    .await
-                    .map_err(|_| DBError::QueryError)
-                })?;
-            }
-            _ => {
-                return Err(DBError::InvalidURI);
-            }
-        }
-
-        Ok(())
-    }
-
-    pub fn increment_replay_count(&self, user_id: String, uri: String) -> Result<(), DBError> {
-        let t = get_uri_type(&uri);
-
-        let conn = match &self.connection {
-            Some(c) => c,
-            None => return Err(DBError::ConnectionError),
-        };
-
-        match t {
-            UriType::Track => {
-                futures::executor::block_on(async {
-                    sqlx::query(
-                        "UPDATE user_track_analytics SET replay_count = replay_count + 1 \
-                        WHERE user_id = $1 AND track_uri = $2",
-                    )
-                    .bind(&user_id)
-                    .bind(&uri)
-                    .execute(conn)
-                    .await
-                    .map_err(|_| DBError::QueryError)
-                })?;
-            }
-            UriType::Episode => {
-                futures::executor::block_on(async {
-                    sqlx::query(
-                        "UPDATE user_track_episode_analytics SET replay_count = replay_count + 1 \
-                        WHERE user_id = $1 AND episode_uri = $2",
-                    )
-                    .bind(&user_id)
-                    .bind(&uri)
-                    .execute(conn)
-                    .await
-                    .map_err(|_| DBError::QueryError)
-                })?;
-            }
-            _ => {
-                return Err(DBError::InvalidURI);
-            }
-        }
+        sqlx::query(&format!(
+            "INSERT INTO {0} (user_id, {1}, {2}, last_played) VALUES ($1, $2, 1, CURRENT_TIMESTAMP) \
+                ON CONFLICT(user_id, {1}) DO UPDATE SET \
+                {2} = {2} + 1, last_played = CURRENT_TIMESTAMP",
+            table, uri_col, counter
+        ))
+        .bind(user_id)
+        .bind(uri)
+        .execute(self.connection.as_ref().unwrap())
+        .await
+        .map_err(|_| DBError::QueryError)?;
 
         Ok(())
     }
@@ -758,108 +661,48 @@ impl DBManager {
         uri: &str,
         position: i64,
     ) -> Result<(), DBError> {
-        // get current most recent song for user
-        let res = sqlx::query(
-            "SELECT item_uri, position, updated_at FROM play_history
-            WHERE user_id = $1 ORDER BY updated_at DESC LIMIT 1",
+
+        // last seen item/position for this user, None on first poll
+        let prev: Option<(String, i64)> =
+            sqlx::query_as("SELECT item_uri, position FROM play_history WHERE user_id = $1")
+                .bind(user_id)
+                .fetch_optional(self.connection.as_ref().unwrap())
+                .await
+                .map_err(|_| DBError::QueryError)?;
+
+        sqlx::query(
+            "INSERT INTO play_history (user_id, item_uri, position, updated_at) \
+                VALUES ($1, $2, $3, CURRENT_TIMESTAMP) \
+                ON CONFLICT(user_id) DO UPDATE SET \
+                item_uri = excluded.item_uri, position = excluded.position, \
+                updated_at = excluded.updated_at",
         )
         .bind(user_id)
-        .fetch_one(self.connection.as_ref().unwrap())
-        .await;
+        .bind(uri)
+        .bind(position)
+        .execute(self.connection.as_ref().unwrap())
+        .await
+        .map_err(|_| DBError::QueryError)?;
 
-        if let Ok(row) = res {
-            // updated_at is a SQLite TIMESTAMP column, populated via CURRENT_TIMESTAMP, so it
-            // comes back as text (e.g. "2026-08-30 12:34:56"), not an integer.
-            let prev_uri: String = row.try_get("item_uri").unwrap_or_default();
-            let prev_pos: i64 = row.try_get("position").unwrap_or(0);
-            let prev_ts: String = row.try_get("updated_at").unwrap_or_default();
-            if prev_uri == uri {
-                let _ = sqlx::query(
-                    "UPDATE play_history SET position = $1, updated_at = CURRENT_TIMESTAMP
-                    WHERE user_id = $2 AND updated_at = $3",
-                )
-                .bind(position)
-                .bind(user_id)
-                .bind(prev_ts)
-                .execute(self.connection.as_ref().unwrap())
-                .await;
+        match prev {
 
-                // if pos is less than previous pos, we replayed the track
-                if position < prev_pos {
-                    let t = get_uri_type(uri);
-
-                    match t {
-                        UriType::Track => {
-                            let _ = sqlx::query(
-                                "UPDATE user_track_analytics SET replay_count = replay_count + 1
-                                WHERE user_id = $1 AND track_uri = $2",
-                            )
-                            .bind(user_id)
-                            .bind(uri)
-                            .execute(self.connection.as_ref().unwrap())
-                            .await;
-                        }
-                        UriType::Episode => {
-                            let _ = sqlx::query(
-                                "UPDATE user_track_episode_analytics SET replay_count = replay_count + 1
-                                WHERE user_id = $1 AND episode_uri = $2"
-                            )
-                            .bind(user_id)
-                            .bind(uri)
-                            .execute(self.connection.as_ref().unwrap())
-                            .await;
-                        }
-                        _ => {
-                            return Err(DBError::InvalidURI);
-                        }
-                    }
-                }
-            } else {
-                let _ = sqlx::query(
-                    "INSERT INTO play_history (user_id, item_uri, position, updated_at)
-                     VALUES ($1, $2, $3, CURRENT_TIMESTAMP)
-                     ON CONFLICT(user_id) DO UPDATE SET
-                     item_uri = excluded.item_uri,
-                     position = excluded.position,
-                     updated_at = excluded.updated_at",
-                )
-                .bind(user_id)
-                .bind(uri)
-                .bind(position)
-                .execute(self.connection.as_ref().unwrap())
-                .await;
-
-                // if prev pos was small, we skipped the track
-                if prev_pos < 30000 && !prev_uri.is_empty() {
-                    let t = get_uri_type(&prev_uri);
-
-                    match t {
-                        UriType::Track => {
-                            let _ = sqlx::query(
-                                "UPDATE user_track_analytics SET skip_count = skip_count + 1
-                                WHERE user_id = $1 AND track_uri = $2",
-                            )
-                            .bind(user_id)
-                            .bind(&prev_uri)
-                            .execute(self.connection.as_ref().unwrap())
-                            .await;
-                        }
-                        UriType::Episode => {
-                            let _ = sqlx::query(
-                                "UPDATE user_track_episode_analytics SET skip_count = skip_count + 1
-                                WHERE user_id = $1 AND episode_uri = $2"
-                            )
-                            .bind(user_id)
-                            .bind(&prev_uri)
-                            .execute(self.connection.as_ref().unwrap())
-                            .await;
-                        }
-                        _ => {
-                            return Err(DBError::InvalidURI);
-                        }
-                    }
-                }
+            // same item jumped back near the start: replayed
+            Some((prev_uri, prev_pos))
+                if prev_uri == uri && position < REPLAY_MAX_MS && position < prev_pos =>
+            {
+                self.increment_count(user_id, uri, "replay_count").await?;
             }
+
+            // moved on to another item: left early is a skip, else a play
+            Some((prev_uri, prev_pos)) if prev_uri != uri => {
+                let counter = if prev_pos < SKIP_MAX_MS {
+                    "skip_count"
+                } else {
+                    "play_count"
+                };
+                self.increment_count(user_id, &prev_uri, counter).await?;
+            }
+            _ => {}
         }
 
         Ok(())
@@ -956,6 +799,54 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(owner("spotify:playlist:p2").await.unwrap(), "acc");
+
+        db.connection.as_ref().unwrap().close().await;
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[tokio::test]
+    async fn now_playing_counts_play_skip_replay() {
+        let path = std::env::temp_dir().join(format!("spt_np_test_{}.db", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        let mut db = DBManager::new(path.to_str().unwrap().to_string(), 0);
+        db.setup().await.unwrap();
+        db.save_signed_in_user("acc", "sid", "Me").await.unwrap();
+
+        // a currently-playing item
+        for uri in ["spotify:track:t1", "spotify:track:t2"] {
+            let track = serde_json::json!({
+                "uri": uri, "name": "T", "track_number": 1, "disc_number": 1,
+                "duration_ms": 200000, "explicit": false,
+                "album": {"uri": "spotify:album:a", "name": "A", "album_type": "album",
+                          "release_date": "2020-01-01"},
+                "artists": [{"uri": "spotify:artist:r", "name": "R"}]
+            });
+            db.cache_item_from_api(uri, &track).await.unwrap();
+        }
+
+        let polls = [
+            ("spotify:track:t1", 0), // first poll: nothing to count
+            ("spotify:track:t1", 40000),
+            ("spotify:track:t2", 1000), // t1 left after 30s: play
+            ("spotify:track:t2", 20000),
+            ("spotify:track:t2", 2000), // t2 back near the start: replay
+            ("spotify:track:t2", 2000), // paused: nothing
+            ("spotify:track:t1", 0),    // t2 left before 30s: skip
+        ];
+        for (uri, pos) in polls {
+            db.update_now_playing("acc", uri, pos).await.unwrap();
+        }
+
+        let counts = |uri: &'static str| {
+            sqlx::query_as::<_, (i64, i64, i64)>(
+                "SELECT play_count, skip_count, replay_count FROM user_track_analytics \
+                    WHERE user_id = 'acc' AND track_uri = $1",
+            )
+            .bind(uri)
+            .fetch_one(db.connection.as_ref().unwrap())
+        };
+        assert_eq!(counts("spotify:track:t1").await.unwrap(), (1, 0, 0));
+        assert_eq!(counts("spotify:track:t2").await.unwrap(), (0, 1, 1));
 
         db.connection.as_ref().unwrap().close().await;
         let _ = std::fs::remove_file(&path);
