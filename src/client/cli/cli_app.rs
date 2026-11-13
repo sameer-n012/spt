@@ -1,5 +1,5 @@
 use crate::client::cli::eval::eval;
-use crate::client::cli::parser::{parse, tokenize, verify_command, verify_flags, ParseError};
+use crate::client::cli::parser::{parse, tokenize, verify_flags, ParseError};
 use crate::client::local_api_proxy::ApiProxy;
 use log::debug;
 
@@ -189,14 +189,12 @@ async fn run(
     debug!("Received command {}", input);
 
     let tokens = tokenize(&input)?;
-    verify_command(&tokens, &command_list)?;
+    let expr = parse(&tokens, &command_list)?;
+    verify_flags(&expr, &flags)?;
 
-    let cmd = parse(&tokens, &command_list)?;
-    verify_flags(&cmd, &flags)?;
+    debug!("Tokenized and parsed {:?}", expr);
 
-    debug!("Tokenized and parsed {:?}", tokens);
-
-    return Ok(eval(api_proxy, &cmd).await);
+    return Ok(eval(api_proxy, &expr).await);
 }
 
 pub async fn run_cli(api_proxy: &mut ApiProxy, args: Vec<String>) {

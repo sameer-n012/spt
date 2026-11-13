@@ -1,4 +1,4 @@
-use crate::client::cli::parser::{Arg, CommandNode};
+use crate::client::cli::parser::{CommandNode, Expr};
 use crate::client::core::playback_manager::PlaybackManager;
 use crate::client::local_api_proxy::ApiProxy;
 use log::debug;
@@ -7,21 +7,18 @@ struct EvalContext<'a> {
     playback_manager: PlaybackManager<'a>,
 }
 
-async fn eval_simple(
-    ctx: &mut EvalContext<'_>,
-    command: String,
-    args: Vec<String>,
-) -> Option<String> {
-    let args_nf: Vec<String> = args // args without flags
-        .clone()
-        .into_iter()
-        .filter(|arg| !arg.starts_with('-'))
-        .map(|arg| arg.trim().trim_matches('"').to_string())
+async fn eval_simple(ctx: &mut EvalContext<'_>, cmd: &CommandNode) -> Option<String> {
+    let args_nf: Vec<String> = cmd // args without flags
+        .args
+        .iter()
+        .filter(|arg| !arg.is_flag())
+        .map(|arg| arg.text.clone())
         .collect();
+    let has_flag = |flag: &str| cmd.args.iter().any(|a| a.is_flag() && a.text == flag);
 
-    debug!("Evaluating command {} with args {:?}", command, args_nf);
+    debug!("Evaluating command {} with args {:?}", cmd.name, args_nf);
 
-    match command.as_str() {
+    match cmd.name.as_str() {
         "play" => ctx.playback_manager.play().await,
         "pause" => ctx.playback_manager.pause().await,
         "next" => {
@@ -58,15 +55,15 @@ async fn eval_simple(
             }
         }
         "devices" => {
-            let h = args.contains(&"-h".to_string());
+            let h = has_flag("-h");
             ctx.playback_manager.devices(h).await
         }
         "now" => {
-            let h = args.contains(&"-h".to_string());
+            let h = has_flag("-h");
             ctx.playback_manager.now(h).await
         }
         "queue" => {
-            let h = args.contains(&"-h".to_string());
+            let h = has_flag("-h");
             if args_nf.is_empty() {
                 ctx.playback_manager.queue(h).await
             } else {
@@ -74,7 +71,7 @@ async fn eval_simple(
             }
         }
         "recent" => {
-            let h = args.contains(&"-h".to_string());
+            let h = has_flag("-h");
             let n = args_nf
                 .first()
                 .and_then(|s| s.parse::<u8>().ok())
@@ -85,28 +82,12 @@ async fn eval_simple(
     }
 }
 
-pub async fn eval(api_proxy: &mut ApiProxy, cmd: &CommandNode) -> Option<String> {
+pub async fn eval(api_proxy: &mut ApiProxy, expr: &Expr) -> Option<String> {
     let mut ctx = EvalContext {
         playback_manager: PlaybackManager::new(api_proxy),
     };
-    return eval_rec(&mut ctx, cmd).await;
-}
-
-async fn eval_rec(ctx: &mut EvalContext<'_>, cmd: &CommandNode) -> Option<String> {
-    let mut evaluated_args: Vec<String> = Vec::new();
-    for arg in cmd.args.iter() {
-        match arg {
-            Arg::Command(subcmd) => {
-                // Recursively evaluate subcommands
-                evaluated_args.push(Box::pin(eval_rec(ctx, subcmd)).await?);
-            }
-            Arg::Text(text) => {
-                if !text.is_empty() {
-                    evaluated_args.push(text.clone());
-                }
-            }
-        }
+    match expr {
+        Expr::Command(cmd) => eval_simple(&mut ctx, cmd).await,
+        Expr::Binary(op, _, _) => Some(format!("Error: `{}` is not supported yet", op)),
     }
-
-    return eval_simple(ctx, cmd.name.clone(), evaluated_args).await;
 }
