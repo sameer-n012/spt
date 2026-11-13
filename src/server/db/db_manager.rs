@@ -569,6 +569,36 @@ impl DBManager {
         Ok(())
     }
 
+    // stores a reccobeats audio-features object on a cached track
+    pub async fn save_audio_features(
+        &self,
+        uri: &str,
+        features: &serde_json::Value,
+    ) -> Result<(), DBError> {
+        sqlx::query(
+            "UPDATE tracks SET acousticness = $1, danceability = $2, energy = $3, \
+                instrumentalness = $4, liveness = $5, loudness = $6, speechiness = $7, \
+                tempo = $8, valence = $9, pitch_class_key = $10 WHERE uri = $11",
+        )
+        .bind(features["acousticness"].as_f64())
+        .bind(features["danceability"].as_f64())
+        .bind(features["energy"].as_f64())
+        .bind(features["instrumentalness"].as_f64())
+        .bind(features["liveness"].as_f64())
+        .bind(features["loudness"].as_f64())
+        .bind(features["speechiness"].as_f64())
+        .bind(features["tempo"].as_f64())
+        .bind(features["valence"].as_f64())
+        // -1 means no key detected
+        .bind(features["key"].as_i64().filter(|k| *k >= 0))
+        .bind(uri)
+        .execute(self.connection.as_ref().unwrap())
+        .await
+        .map_err(|_| DBError::QueryError)?;
+
+        Ok(())
+    }
+
     // upserts the signed-in user keyed by account_id
     pub async fn save_signed_in_user(
         &self,
@@ -971,6 +1001,140 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_subset(&cached, &playlist, "playlist");
+
+        db.connection.as_ref().unwrap().close().await;
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[tokio::test]
+    async fn model_user_analytics_queries_use_real_tables() {
+        use crate::models::episode::Episode;
+        use crate::models::track::Track;
+
+        let path = std::env::temp_dir().join(format!("spt_ua_test_{}.db", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        let mut db = DBManager::new(path.to_str().unwrap().to_string(), 0);
+        db.setup().await.unwrap();
+        db.save_signed_in_user("acc", "sid", "Me").await.unwrap();
+        let pool = db.connection.clone().unwrap();
+
+        let ua = serde_json::json!({"user_id": "acc", "play_count": 2, "skip_count": 1,
+            "replay_count": 0, "last_played": null});
+        let counts = |sql: &'static str| {
+            sqlx::query_as::<_, (i64, i64, i64)>(sql)
+                .fetch_optional(db.connection.as_ref().unwrap())
+        };
+
+        let track_json = serde_json::json!({
+            "uri": "spotify:track:t", "name": "T", "track_number": 1, "disc_number": 1,
+            "duration_ms": 1000, "explicit": false, "artists": [],
+            "album": {"uri": "spotify:album:a", "name": "A", "album_type": "album",
+                      "release_date": "2020-01-01"}
+        });
+        db.cache_item_from_api("spotify:track:t", &track_json)
+            .await
+            .unwrap();
+        let mut track = Track::from_api_record(
+            serde_json::json!({"uri": "spotify:track:t", "name": "T",
+                "album_uri": "spotify:album:a", "track_number": 1, "disc_number": 1,
+                "duration_ms": 1000, "explicit": false}),
+            Some(ua.clone()),
+        )
+        .unwrap();
+        let track_sql = "SELECT play_count, skip_count, replay_count FROM user_track_analytics \
+            WHERE user_id = 'acc' AND track_uri = 'spotify:track:t'";
+
+        let insert = track.generate_user_analytics_insert_query("acc").unwrap();
+        insert.execute(&pool).await.unwrap();
+        db.increment_count("acc", "spotify:track:t", "skip_count")
+            .await
+            .unwrap();
+        assert_eq!(counts(track_sql).await.unwrap(), Some((2, 2, 0)));
+
+        track.user_analytics.as_mut().unwrap().play_count = 5;
+        let update = track.generate_user_analytics_update_query("acc").unwrap();
+        update.execute(&pool).await.unwrap();
+        assert_eq!(counts(track_sql).await.unwrap(), Some((5, 1, 0)));
+
+        let delete = track.generate_user_analytics_delete_query("acc");
+        delete.execute(&pool).await.unwrap();
+        assert_eq!(counts(track_sql).await.unwrap(), None);
+
+        let episode_json = serde_json::json!({
+            "uri": "spotify:episode:e", "name": "E", "release_date": "2021-01-01",
+            "duration_ms": 1000, "explicit": false,
+            "show": {"uri": "spotify:show:s", "name": "S", "publisher": "P"}
+        });
+        db.cache_item_from_api("spotify:episode:e", &episode_json)
+            .await
+            .unwrap();
+        let episode = Episode::from_api_record(
+            serde_json::json!({"uri": "spotify:episode:e", "name": "E",
+                "show_uri": "spotify:show:s", "episode_number": 0,
+                "release_date": "2021-01-01", "duration_ms": 1000, "explicit": false}),
+            Some(ua),
+        )
+        .unwrap();
+        let episode_sql = "SELECT play_count, skip_count, replay_count \
+            FROM user_track_episode_analytics \
+            WHERE user_id = 'acc' AND episode_uri = 'spotify:episode:e'";
+
+        let insert = episode.generate_user_analytics_insert_query("acc").unwrap();
+        insert.execute(&pool).await.unwrap();
+        assert_eq!(counts(episode_sql).await.unwrap(), Some((2, 1, 0)));
+        let delete = episode.generate_user_analytics_delete_query("acc");
+        delete.execute(&pool).await.unwrap();
+        assert_eq!(counts(episode_sql).await.unwrap(), None);
+
+        pool.close().await;
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[tokio::test]
+    async fn audio_features_saved_and_kept_on_recache() {
+        let path = std::env::temp_dir().join(format!("spt_af_test_{}.db", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        let mut db = DBManager::new(path.to_str().unwrap().to_string(), 0);
+        db.setup().await.unwrap();
+
+        let track = serde_json::json!({
+            "uri": "spotify:track:t", "name": "T", "track_number": 1, "disc_number": 1,
+            "duration_ms": 1000, "explicit": false, "artists": [],
+            "album": {"uri": "spotify:album:a", "name": "A", "album_type": "album",
+                      "release_date": "2020-01-01"}
+        });
+        db.cache_item_from_api("spotify:track:t", &track)
+            .await
+            .unwrap();
+
+        let features = |key: i64| {
+            serde_json::json!({"acousticness": 0.1, "danceability": 0.2, "energy": 0.3,
+                "instrumentalness": 0.0, "key": key, "liveness": 0.4, "loudness": -5.5,
+                "mode": 1, "speechiness": 0.05, "tempo": 120.5, "valence": 0.6})
+        };
+        let stored = || {
+            sqlx::query_as::<_, (Option<f64>, Option<f64>, Option<i64>)>(
+                "SELECT tempo, loudness, pitch_class_key FROM tracks WHERE uri = 'spotify:track:t'",
+            )
+            .fetch_one(db.connection.as_ref().unwrap())
+        };
+
+        db.save_audio_features("spotify:track:t", &features(9))
+            .await
+            .unwrap();
+        assert_eq!(stored().await.unwrap(), (Some(120.5), Some(-5.5), Some(9)));
+
+        // re-caching the track updates metadata only, features stay
+        db.cache_item_from_api("spotify:track:t", &track)
+            .await
+            .unwrap();
+        assert_eq!(stored().await.unwrap(), (Some(120.5), Some(-5.5), Some(9)));
+
+        // -1 is "no key detected"
+        db.save_audio_features("spotify:track:t", &features(-1))
+            .await
+            .unwrap();
+        assert_eq!(stored().await.unwrap(), (Some(120.5), Some(-5.5), None));
 
         db.connection.as_ref().unwrap().close().await;
         let _ = std::fs::remove_file(&path);

@@ -1,5 +1,6 @@
 pub mod server {
     pub mod web {
+        pub mod reccobeats_proxy;
         pub mod routes;
         pub mod server;
         pub mod spt_api_proxy;

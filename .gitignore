@@ -10,3 +10,4 @@ CLAUDE.md
 .claude/
 .mcp.json
 docs/decisions
+scratch/

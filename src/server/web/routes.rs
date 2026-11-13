@@ -9,6 +9,7 @@ use tokio::sync::{Mutex, RwLock};
 use warp::{Filter, Rejection, Reply};
 
 use crate::server::db::db_manager::DBManager;
+use crate::server::web::reccobeats_proxy::ReccoBeatsProxy;
 use crate::server::web::spt_api_proxy::ApiProxy;
 use crate::util::errors::return_response_code;
 use crate::util::errors::ApiError;
@@ -69,6 +70,7 @@ fn construct_lookup_by_id_route(
     spotify_uri_type: &'static str,
     api_proxies: Arc<RwLock<HashMap<u64, Arc<ApiProxy>>>>,
     db_manager: Arc<DBManager>,
+    reccobeats: Arc<ReccoBeatsProxy>,
     last_request_time: Arc<Mutex<Instant>>,
     client_last_activity: Arc<Mutex<HashMap<u64, Instant>>>,
 ) -> impl Filter<Extract = (warp::reply::WithStatus<warp::reply::Json>,), Error = Rejection> + Clone
@@ -84,6 +86,7 @@ fn construct_lookup_by_id_route(
             let last_request_time = Arc::clone(&last_request_time);
             let api_proxies = Arc::clone(&api_proxies);
             let db_manager = Arc::clone(&db_manager);
+            let reccobeats = Arc::clone(&reccobeats);
             let client_last_activity = Arc::clone(&client_last_activity);
 
             async move {
@@ -143,6 +146,10 @@ fn construct_lookup_by_id_route(
                                 db_manager.cache_item_from_api(&spotify_uri, &json).await
                             {
                                 warn!("Failed to cache {} after live fetch: {}.", spotify_uri, e);
+                            } else if prefix == "tracks" {
+                                reccobeats
+                                    .cache_audio_features(&db_manager, &spotify_uri)
+                                    .await;
                             }
                         }
                         Ok::<_, warp::Rejection>(warp::reply::with_status(
@@ -435,6 +442,7 @@ fn construct_json_fwd_route(
 pub fn routes(
     api_proxies: Arc<RwLock<HashMap<u64, Arc<ApiProxy>>>>,
     db_manager: Arc<DBManager>,
+    reccobeats: Arc<ReccoBeatsProxy>,
     next_client_id: Arc<Mutex<u64>>,
     last_request_time: Arc<Mutex<Instant>>,
     client_last_activity: Arc<Mutex<HashMap<u64, Instant>>>,
@@ -533,6 +541,7 @@ pub fn routes(
                 spotify_uri_type,
                 Arc::clone(&api_proxies),
                 Arc::clone(&db_manager),
+                Arc::clone(&reccobeats),
                 Arc::clone(&last_request_time),
                 Arc::clone(&client_last_activity),
             )

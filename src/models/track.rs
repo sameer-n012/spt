@@ -330,7 +330,7 @@ impl Track {
         user_id: &'q str,
     ) -> Option<Query<'q, sqlx::Sqlite, sqlx::sqlite::SqliteArguments<'q>>> {
         if let Some(ua) = &self.user_analytics {
-            let query_str = "INSERT INTO track_user_analytics (user_id, track_uri, play_count, \
+            let query_str = "INSERT INTO user_track_analytics (user_id, track_uri, play_count, \
                 skip_count, replay_count, last_played) VALUES (?, ?, ?, ?, ?, ?)";
             let mut query = sqlx::query(query_str);
             query = query.bind(user_id);
@@ -350,7 +350,7 @@ impl Track {
         user_id: &'q str,
     ) -> Option<Query<'q, sqlx::Sqlite, sqlx::sqlite::SqliteArguments<'q>>> {
         if let Some(ua) = &self.user_analytics {
-            let query_str = "UPDATE track_user_analytics SET play_count = ?, skip_count = ?, \
+            let query_str = "UPDATE user_track_analytics SET play_count = ?, skip_count = ?, \
                 replay_count = ?, last_played = ? WHERE user_id = ? AND track_uri = ?";
             let mut query = sqlx::query(query_str);
             query = query.bind(ua.play_count);
@@ -365,11 +365,13 @@ impl Track {
         return None;
     }
 
-    pub fn generate_user_analytics_delete_query(
-        &self,
-    ) -> Query<'_, sqlx::Sqlite, sqlx::sqlite::SqliteArguments<'_>> {
-        let query_str = "DELETE FROM track_user_analytics WHERE uri = ?";
+    pub fn generate_user_analytics_delete_query<'q>(
+        &'q self,
+        user_id: &'q str,
+    ) -> Query<'q, sqlx::Sqlite, sqlx::sqlite::SqliteArguments<'q>> {
+        let query_str = "DELETE FROM user_track_analytics WHERE user_id = ? AND track_uri = ?";
         let mut query = sqlx::query(query_str);
+        query = query.bind(user_id);
         query = query.bind(&self.uri);
         return query;
     }

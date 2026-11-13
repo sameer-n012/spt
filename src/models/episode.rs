@@ -65,17 +65,12 @@ impl Episode {
             explicit: episode_record["explicit"]
                 .as_bool()
                 .ok_or(DataParseError::FieldMissingError)?,
-            user_analytics: episode_user_analytics_record.map(|_| EpisodeUserAnalytics {
-                user_id: episode_record["user_id"]
-                    .as_str()
-                    .unwrap_or_default()
-                    .to_string(),
-                play_count: episode_record["play_count"].as_i64().unwrap_or(0) as i32,
-                skip_count: episode_record["skip_count"].as_i64().unwrap_or(0) as i32,
-                replay_count: episode_record["replay_count"].as_i64().unwrap_or(0) as i32,
-                last_played: episode_record["last_played"]
-                    .as_str()
-                    .map(|s| s.to_string()),
+            user_analytics: episode_user_analytics_record.map(|eua| EpisodeUserAnalytics {
+                user_id: eua["user_id"].as_str().unwrap_or_default().to_string(),
+                play_count: eua["play_count"].as_i64().unwrap_or(0) as i32,
+                skip_count: eua["skip_count"].as_i64().unwrap_or(0) as i32,
+                replay_count: eua["replay_count"].as_i64().unwrap_or(0) as i32,
+                last_played: eua["last_played"].as_str().map(|s| s.to_string()),
             }),
         };
 
@@ -217,7 +212,7 @@ impl Episode {
         user_id: &'q str,
     ) -> Option<Query<'q, sqlx::Sqlite, sqlx::sqlite::SqliteArguments<'q>>> {
         if let Some(ua) = &self.user_analytics {
-            let query_str = "INSERT INTO episode_user_analytics (user_id, episode_uri, play_count, skip_count, \
+            let query_str = "INSERT INTO user_track_episode_analytics (user_id, episode_uri, play_count, skip_count, \
                 replay_count, last_played) VALUES (?, ?, ?, ?, ?, ?)";
             let mut query = sqlx::query(query_str);
             query = query.bind(user_id);
@@ -237,7 +232,7 @@ impl Episode {
         user_id: &'q str,
     ) -> Option<Query<'q, sqlx::Sqlite, sqlx::sqlite::SqliteArguments<'q>>> {
         if let Some(ua) = &self.user_analytics {
-            let query_str = "UPDATE episode_user_analytics SET play_count = ?, skip_count = ?, replay_count = ?, \
+            let query_str = "UPDATE user_track_episode_analytics SET play_count = ?, skip_count = ?, replay_count = ?, \
                 last_played = ? WHERE user_id = ? AND episode_uri = ?";
             let mut query = sqlx::query(query_str);
             query = query.bind(ua.play_count);
@@ -254,10 +249,13 @@ impl Episode {
 
     pub fn generate_user_analytics_delete_query<'q>(
         &'q self,
-    ) -> Option<Query<'q, sqlx::Sqlite, sqlx::sqlite::SqliteArguments<'q>>> {
-        let query_str = "DELETE FROM episode_user_analytics WHERE episode_uri = ?";
+        user_id: &'q str,
+    ) -> Query<'q, sqlx::Sqlite, sqlx::sqlite::SqliteArguments<'q>> {
+        let query_str =
+            "DELETE FROM user_track_episode_analytics WHERE user_id = ? AND episode_uri = ?";
         let mut query = sqlx::query(query_str);
+        query = query.bind(user_id);
         query = query.bind(&self.uri);
-        Some(query)
+        query
     }
 }

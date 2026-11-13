@@ -11,14 +11,17 @@ use tokio::sync::{Mutex, RwLock};
 use tokio::time;
 
 use crate::server::db::db_manager::DBManager;
+use crate::server::web::reccobeats_proxy::ReccoBeatsProxy;
 use crate::server::web::routes;
 use crate::server::web::spt_api_proxy::ApiProxy;
+use crate::util::uri_helper::{get_uri_type, UriType};
 
 #[derive(Debug)]
 pub struct ServerMeta {
     pub port: u16,
     pub inactivity_timeout: Duration,
     pub db_manager: Arc<DBManager>,
+    pub reccobeats: Arc<ReccoBeatsProxy>,
     pub api_proxies: Arc<RwLock<HashMap<u64, Arc<ApiProxy>>>>,
     pub next_client_id: Arc<Mutex<u64>>,
     pub last_request_time: Arc<Mutex<Instant>>,
@@ -42,10 +45,14 @@ pub async fn start_server(
     let mut db_manager = DBManager::new(db_url, db_port);
     db_manager.setup().await?;
 
+    let reccobeats_url =
+        env::var("SPT_RECCOBEATS_API_BASE_URL").unwrap_or("https://api.reccobeats.com".to_string());
+
     let server_meta = ServerMeta {
         port,
         inactivity_timeout,
         db_manager: Arc::new(db_manager),
+        reccobeats: Arc::new(ReccoBeatsProxy::new(reccobeats_url)),
         api_proxies: Arc::new(RwLock::new(HashMap::new())),
         next_client_id: Arc::new(Mutex::new(1)),
         last_request_time,
@@ -58,6 +65,7 @@ pub async fn start_server(
     let routes = routes::routes(
         Arc::clone(&server_meta.api_proxies),
         Arc::clone(&server_meta.db_manager),
+        Arc::clone(&server_meta.reccobeats),
         Arc::clone(&server_meta.next_client_id),
         Arc::clone(&server_meta.last_request_time),
         Arc::clone(&server_meta.client_last_activity),
@@ -78,6 +86,7 @@ pub async fn start_server(
     tokio::spawn(check_periodic_update(
         Arc::clone(&server_meta.api_proxies),
         Arc::clone(&server_meta.db_manager),
+        Arc::clone(&server_meta.reccobeats),
         Arc::clone(&server_meta.client_last_activity),
         server_meta.inactivity_timeout,
         Duration::from_secs(10),
@@ -121,6 +130,7 @@ async fn handle_shutdown(
 async fn check_periodic_update(
     api_proxies: Arc<RwLock<HashMap<u64, Arc<ApiProxy>>>>,
     db_manager: Arc<DBManager>,
+    reccobeats: Arc<ReccoBeatsProxy>,
     client_last_activity: Arc<Mutex<HashMap<u64, Instant>>>,
     inactivity_timeout: Duration,
     update_interval: Duration,
@@ -128,7 +138,12 @@ async fn check_periodic_update(
     let mut interval = time::interval(update_interval);
     loop {
         interval.tick().await;
-        periodic_update(Arc::clone(&api_proxies), Arc::clone(&db_manager)).await;
+        periodic_update(
+            Arc::clone(&api_proxies),
+            Arc::clone(&db_manager),
+            Arc::clone(&reccobeats),
+        )
+        .await;
 
         // Remove inactive clients
         let now = Instant::now();
@@ -156,6 +171,7 @@ async fn periodic_update(
     // last_request_time: Arc<Mutex<Instant>>,
     api_proxies: Arc<RwLock<HashMap<u64, Arc<ApiProxy>>>>,
     db_manager: Arc<DBManager>,
+    reccobeats: Arc<ReccoBeatsProxy>,
 ) {
     // update last request time
     // let mut last_time = last_request_time.lock().await;
@@ -189,6 +205,8 @@ async fn periodic_update(
         if !db_manager.check_item_in_db(uri).await.unwrap_or(true) {
             if let Err(e) = db_manager.cache_item_from_api(uri, &json["item"]).await {
                 warn!("Failed to cache now playing item {}: {}.", uri, e);
+            } else if matches!(get_uri_type(uri), UriType::Track) {
+                reccobeats.cache_audio_features(&db_manager, uri).await;
             }
         }
 
