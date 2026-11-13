@@ -1,7 +1,23 @@
 use crate::client::cli::formatter;
 use crate::client::local_api_proxy::ApiProxy;
+use crate::util::errors::ApiError;
 use serde_json::{json, Value};
 use std::collections::HashMap;
+
+// player commands: spotify's 404/403 usually mean no active device / command not allowed now
+fn player_error(err: &ApiError) -> String {
+    match err {
+        ApiError::ResponseError404 => {
+            "No active device. Pick one with `devices` and `device <name>` \
+            (right after `device`, wait a moment and retry)."
+                .to_string()
+        }
+        ApiError::ResponseError403 => {
+            "Spotify refused the command (e.g. already playing/paused).".to_string()
+        }
+        _ => format!("Error: {}", err),
+    }
+}
 
 #[derive(Debug)]
 pub struct PlaybackManager<'a> {
@@ -68,8 +84,8 @@ impl<'a> PlaybackManager<'a> {
             } else {
                 return Some(format!("Error: {}", status));
             }
-        } else if res.is_err() {
-            return Some(format!("Error: {}", res.unwrap_err()));
+        } else if let Err(err) = &res {
+            return Some(player_error(err));
         }
 
         return Some("Unknown error.".to_string());
@@ -92,8 +108,8 @@ impl<'a> PlaybackManager<'a> {
             } else {
                 return Some(format!("Error: {}", status));
             }
-        } else if res.is_err() {
-            return Some(format!("Error: {}", res.unwrap_err()));
+        } else if let Err(err) = &res {
+            return Some(player_error(err));
         }
 
         return Some("Unknown error.".to_string());
@@ -132,7 +148,7 @@ impl<'a> PlaybackManager<'a> {
                     }
                 },
                 Err(err) => {
-                    output.push(format!("Error: {}", err));
+                    output.push(player_error(err));
                     true
                 }
             })
@@ -143,7 +159,7 @@ impl<'a> PlaybackManager<'a> {
             format!(
                 "Skipped {} track{}.",
                 n - all_failed,
-                if n - all_failed > 1 { "s" } else { "" }
+                if n - all_failed != 1 { "s" } else { "" }
             ),
         );
 
@@ -183,7 +199,7 @@ impl<'a> PlaybackManager<'a> {
                     }
                 },
                 Err(err) => {
-                    output.push(format!("Error: {}", err));
+                    output.push(player_error(err));
                     true
                 }
             })
@@ -194,7 +210,7 @@ impl<'a> PlaybackManager<'a> {
             format!(
                 "Rewinded {} track{}.",
                 n - all_failed,
-                if n - all_failed > 1 { "s" } else { "" }
+                if n - all_failed != 1 { "s" } else { "" }
             ),
         );
 
@@ -221,8 +237,8 @@ impl<'a> PlaybackManager<'a> {
             } else {
                 return Some(format!("Error: {}", status));
             }
-        } else if res.is_err() {
-            return Some(format!("Error: {}", res.unwrap_err()));
+        } else if let Err(err) = &res {
+            return Some(player_error(err));
         }
 
         return Some("Unknown error.".to_string());
@@ -285,8 +301,8 @@ impl<'a> PlaybackManager<'a> {
             } else {
                 return Some(format!("Error: {}", status));
             }
-        } else if res.is_err() {
-            return Some(format!("Error: {}", res.unwrap_err()));
+        } else if let Err(err) = &res {
+            return Some(player_error(err));
         }
 
         return Some("Unknown error.".to_string());
@@ -446,7 +462,7 @@ impl<'a> PlaybackManager<'a> {
                     }
                 },
                 Err(err) => {
-                    output.push(format!("Error: {}", err));
+                    output.push(player_error(err));
                     true
                 }
             })
@@ -457,7 +473,7 @@ impl<'a> PlaybackManager<'a> {
             format!(
                 "Added {} track{} to queue.",
                 n - all_failed,
-                if n - all_failed > 1 { "s" } else { "" }
+                if n - all_failed != 1 { "s" } else { "" }
             ),
         );
 
@@ -521,5 +537,20 @@ impl<'a> PlaybackManager<'a> {
         }
 
         return Some("Unknown error.".to_string());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn player_error_messages() {
+        assert!(player_error(&ApiError::ResponseError404).starts_with("No active device"));
+        assert!(player_error(&ApiError::ResponseError403).starts_with("Spotify refused"));
+        assert_eq!(
+            player_error(&ApiError::ResponseError429),
+            format!("Error: {}", ApiError::ResponseError429)
+        );
     }
 }

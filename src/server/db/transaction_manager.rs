@@ -1,14 +1,15 @@
-use crate::core::api_manager::ApiManager;
+use crate::server::db::db_manager::DBManager;
+use std::sync::Arc;
 
+// stub: local changes queued for remote push (README "Remote Push / Transaction Management")
 #[derive(Debug)]
 pub struct TransactionManager {
-    api_manager: &'static ApiManager,
+    #[allow(dead_code)] // used once the feature is built
+    db_manager: Arc<DBManager>,
 }
 
 impl TransactionManager {
-    pub fn new() -> Self {
-        TransactionManager {
-            api_manager: ApiManager::get_instance(),
-        }
+    pub fn new(db_manager: Arc<DBManager>) -> Self {
+        return TransactionManager { db_manager };
     }
 }

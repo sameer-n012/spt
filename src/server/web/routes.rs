@@ -18,6 +18,7 @@ enum RouteType {
     Get,
     Post,
     Put,
+    #[allow(dead_code)] // no DELETE routes yet (e.g. playlist items later)
     Delete,
 }
 
@@ -160,8 +161,8 @@ fn construct_lookup_by_id_route(
         })
 }
 
+// GET routes (no body)
 fn construct_json_fwd_route_no_body(
-    route_type: RouteType,
     full_route: &str,
     api_proxies: Arc<RwLock<HashMap<u64, Arc<ApiProxy>>>>,
     db_manager: Arc<DBManager>,
@@ -177,15 +178,7 @@ fn construct_json_fwd_route_no_body(
         route = route.and(warp::path(part.clone())).boxed();
     }
 
-    if route_type == RouteType::Post
-        || route_type == RouteType::Put
-        || route_type == RouteType::Delete
-    {
-        error!("Cannot construct POST/PUT/DELETE route without body.");
-        panic!();
-    } else if route_type == RouteType::Get {
-        route = route.and(warp::get()).boxed();
-    }
+    route = route.and(warp::get()).boxed();
 
     route
         .and(warp::path::end())
@@ -196,7 +189,6 @@ fn construct_json_fwd_route_no_body(
                 let last_request_time = Arc::clone(&last_request_time);
                 let api_proxies = Arc::clone(&api_proxies);
                 let db_manager = Arc::clone(&db_manager);
-                let route_type = route_type.clone();
                 let full_route = full_route.clone();
                 let client_last_activity = Arc::clone(&client_last_activity);
 
@@ -245,36 +237,14 @@ fn construct_json_fwd_route_no_body(
                     let shortened_route = &full_route["api/spt-fwd/".len()..];
 
                     // Try DB cache for GET requests to immutable items
-                    let cache_hit = if route_type == RouteType::Get {
+                    let res = if let Some(cached_json) =
                         try_db_cache(&db_manager, shortened_route).await
-                    } else {
-                        None
-                    };
-
-                    let res = if let Some(cached_json) = cache_hit {
+                    {
                         Ok((StatusCode::OK, cached_json))
+                    } else if let Some(route_function) = route_function {
+                        route_function(&proxy, &db_manager, Some(&query), None).await
                     } else {
-                        match route_function.is_none() {
-                            true => match route_type.clone() {
-                                RouteType::Get => proxy.get(shortened_route, Some(query)).await,
-                                RouteType::Delete => {
-                                    error!("Cannot construct DELETE route without body.");
-                                    proxy.delete(shortened_route, None, None).await
-                                }
-                                RouteType::Post => {
-                                    error!("Cannot construct POST route without body.");
-                                    proxy.post(shortened_route, None, None).await
-                                }
-                                RouteType::Put => {
-                                    error!("Cannot construct PUT route without body.");
-                                    proxy.put(shortened_route, None, None).await
-                                }
-                            },
-                            false => {
-                                route_function.unwrap()(&proxy, &db_manager, Some(&query), None)
-                                    .await
-                            }
-                        }
+                        proxy.get(shortened_route, Some(query)).await
                     };
 
                     match res {
@@ -322,17 +292,13 @@ fn construct_json_fwd_route_with_body(
         route = route.and(warp::path(part.clone())).boxed();
     }
 
-    if route_type == RouteType::Get {
-        // error
-        error!("Cannot construct GET route with body.");
-        panic!();
-    } else if route_type == RouteType::Post {
-        route = route.and(warp::post()).boxed();
-    } else if route_type == RouteType::Put {
-        route = route.and(warp::put()).boxed();
-    } else if route_type == RouteType::Delete {
-        route = route.and(warp::delete()).boxed();
-    }
+    // GET is built by construct_json_fwd_route_no_body, but stays valid here (body ignored)
+    route = match route_type {
+        RouteType::Get => route.and(warp::get()).boxed(),
+        RouteType::Post => route.and(warp::post()).boxed(),
+        RouteType::Put => route.and(warp::put()).boxed(),
+        RouteType::Delete => route.and(warp::delete()).boxed(),
+    };
 
     route
         .and(warp::path::end())
@@ -394,10 +360,7 @@ fn construct_json_fwd_route_with_body(
                     let proxy = proxy.unwrap();
                     let shortened_route = &full_route["api/spt-fwd/".len()..];
                     let res = match route_type.clone() {
-                        RouteType::Get => {
-                            error!("Cannot construct GET route with body.");
-                            proxy.get(shortened_route, None).await
-                        }
+                        RouteType::Get => proxy.get(shortened_route, Some(query)).await,
                         RouteType::Put => proxy.put(shortened_route, Some(body), Some(query)).await,
                         RouteType::Post => {
                             proxy.post(shortened_route, Some(body), Some(query)).await
@@ -449,7 +412,6 @@ fn construct_json_fwd_route(
 {
     if route_type == RouteType::Get {
         construct_json_fwd_route_no_body(
-            RouteType::Get,
             full_route,
             api_proxies,
             db_manager,

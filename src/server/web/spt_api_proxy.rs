@@ -3,7 +3,7 @@ use crate::util::errors::{self, ApiError};
 use base64::{engine::general_purpose, Engine};
 use log::{debug, error, info, warn};
 use rand::Rng;
-use reqwest::{Client, StatusCode};
+use reqwest::{Client, Method, StatusCode};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
@@ -257,16 +257,15 @@ impl ApiProxy {
     }
 
     pub async fn execute_backoff(&self) -> Result<(), ApiError> {
-        // loop {
-        // get backoff lock here
-        let backoff = self.backoff.read().await;
+        // copy the time out so the lock isn't held while sleeping
+        let backoff = *self.backoff.read().await;
 
         // backoff if necessary
         match backoff.duration_since(SystemTime::now()) {
             Ok(duration) => {
                 debug!("Client {} entering backoff loop.", self.user_client_id);
 
-                tokio::time::sleep(tokio::time::Duration::from_secs(duration.as_secs())).await;
+                tokio::time::sleep(duration).await;
 
                 return Ok(());
             }
@@ -586,12 +585,9 @@ impl ApiProxy {
         }
         self.unset_cb_auth_code().await;
 
-        // A 400 here is Spotify's invalid_grant response — the refresh token itself is dead
-        // (revoked, or past its 6-month lifetime) and retrying it will never succeed. Drop the
-        // cached copy so a future restart doesn't keep restoring a refresh token that can only
-        // ever fail, and instead falls straight through to browser auth. Other statuses (5xx,
-        // network hiccups relayed as an error status, etc.) are left alone, since the refresh
-        // token itself may still be valid.
+        // 400 is Spotify's invalid_grant response -> refresh token is revoked
+        // or out of date (6 months). drop cached copy so future startups go
+        // to browser auth.
         if status == StatusCode::BAD_REQUEST {
             if let Err(e) = self
                 .db_manager
@@ -608,96 +604,90 @@ impl ApiProxy {
         return Err(errors::return_response_error(status));
     }
 
+    // sends one request to the spotify api, shared by get/post/put/delete
+    async fn send(
+        &self,
+        method: Method,
+        endpoint: &str,
+        body: Option<Value>,
+        params: Option<HashMap<String, String>>,
+    ) -> Result<(StatusCode, Value), ApiError> {
+        let url = format!("{}/{}", self.base_url, endpoint);
+        let params = params.unwrap_or_default();
+
+        // second attempt only runs after a 401, with a refreshed token
+        for attempt in 0..2 {
+            self.execute_backoff().await?;
+            self.validate_auth().await?;
+
+            let access_token = self.auth_info.read().await.access_token.clone();
+
+            info!("Client {} sending request to {}.", self.user_client_id, url);
+
+            let mut request = self
+                .client
+                .request(method.clone(), &url)
+                .query(&params)
+                .bearer_auth(access_token.ok_or(ApiError::NoAccessToken)?.0);
+            if let Some(body) = &body {
+                request = request.json(body);
+            }
+
+            let response = match request.send().await {
+                Ok(res) => res,
+                Err(_) => return Err(ApiError::RequestError),
+            };
+
+            let status = response.status();
+
+            if status.is_success() {
+                info!(
+                    "Client {} received response from {} with status {}.",
+                    self.user_client_id, url, status
+                );
+            } else {
+                warn!(
+                    "Client {} received response from {} with status {}.",
+                    self.user_client_id, url, status
+                );
+            }
+
+            // match status code
+            match status.as_u16() {
+                200 => return Ok((status, read_json(response).await?)),
+                204 => return Ok((status, serde_json::json!({}))),
+                401 if attempt == 0 => {
+                    // token rejected before its expiry, drop it so validate_auth refreshes
+                    self.auth_info.write().await.access_token = None;
+                }
+                401 => return Err(ApiError::InvalidAccessToken),
+                429 => {
+                    // backoff if rate limited, 5s default
+                    let retry_after = response
+                        .headers()
+                        .get("Retry-After")
+                        .and_then(|header| header.to_str().ok())
+                        .and_then(|value| value.parse::<u64>().ok())
+                        .unwrap_or(5);
+                    *self.backoff.write().await =
+                        SystemTime::now() + Duration::from_secs(retry_after);
+
+                    return Err(ApiError::ResponseError429);
+                }
+                _ => return Err(errors::return_response_error(status)),
+            }
+        }
+
+        return Err(ApiError::InvalidAccessToken);
+    }
+
     // Method for sending GET requests to the Spotify API
     pub async fn get(
         &self,
         endpoint: &str,
         params: Option<HashMap<String, String>>,
     ) -> Result<(StatusCode, Value), ApiError> {
-        // check if access token is valid, if not, auth/reauth
-        self.validate_auth().await?;
-
-        // backoff
-        self.execute_backoff().await?;
-
-        // construct and send request
-        let url = format!("{}/{}", self.base_url, endpoint);
-
-        let access_token = {
-            let auth_info = self.auth_info.read().await;
-            auth_info.access_token.clone()
-        };
-
-        info!(
-            "Client {} sending request to {}/{}.",
-            self.user_client_id, self.base_url, endpoint
-        );
-
-        let request = self
-            .client
-            .get(&url)
-            .bearer_auth(access_token.ok_or(ApiError::NoAccessToken)?.0)
-            .query(&params.unwrap_or_default());
-
-        let response = match request.send().await {
-            Ok(res) => res,
-            Err(_) => return Err(ApiError::RequestError),
-        };
-
-        let status = response.status();
-
-        if status.as_u16() == 200 || status.as_u16() == 204 {
-            info!(
-                "Client {} received response from {}/{} with status {}.",
-                self.user_client_id, self.base_url, endpoint, status
-            );
-        } else {
-            warn!(
-                "Client {} received response from {}/{} with status {}.",
-                self.user_client_id, self.base_url, endpoint, status
-            );
-        }
-
-        // match status code
-        match status.as_u16() {
-            200 => {
-                let json = match read_json(response).await {
-                    Ok(data) => data,
-                    Err(_) => {
-                        return Err(ApiError::ResponseParseError);
-                    }
-                };
-                return Ok((status, json));
-            }
-            204 => Ok((status, serde_json::json!({}))),
-            401 => {
-                // refresh access token if needed
-                {
-                    let mut auth_info = self.auth_info.write().await;
-                    auth_info.access_token = None;
-                }
-                self.validate_auth().await?;
-                return Err(ApiError::InvalidAccessToken);
-            }
-            429 => {
-                // backoff if rate limited
-                let mut backoff = self.backoff.write().await;
-                if let Some(retry_after) = response
-                    .headers()
-                    .get("Retry-After")
-                    .and_then(|header| header.to_str().ok())
-                    .and_then(|value| value.parse::<u64>().ok())
-                {
-                    *backoff = SystemTime::now() + Duration::from_secs(retry_after);
-                } else {
-                    *backoff = SystemTime::now() + Duration::from_secs(5);
-                    // default backoff
-                }
-
-                return Err(ApiError::ResponseError429);
-            }
-            _ => Err(errors::return_response_error(status)),
-        }
+        return self.send(Method::GET, endpoint, None, params).await;
     }
 
     // Method for sending POST requests to the Spotify API
@@ -707,91 +697,7 @@ impl ApiProxy {
         body: Option<Value>,
         params: Option<HashMap<String, String>>,
     ) -> Result<(StatusCode, Value), ApiError> {
-        // backoff
-        self.execute_backoff().await?;
-
-        // check if access token is valid, if not, auth/reauth
-        self.validate_auth().await?;
-
-        // construct and send request
-        let url = format!("{}/{}", self.base_url, endpoint);
-
-        let access_token = {
-            let auth_info = self.auth_info.read().await;
-            auth_info.access_token.clone()
-        };
-
-        info!(
-            "Client {} sending request to {}/{}.",
-            self.user_client_id, self.base_url, endpoint
-        );
-
-        let request = self
-            .client
-            .post(&url)
-            .query(&params.unwrap_or_default())
-            .bearer_auth(access_token.ok_or(ApiError::NoAccessToken)?.0)
-            .json(&body.unwrap_or_default());
-
-        let response = match request.send().await {
-            Ok(res) => res,
-            Err(_) => return Err(ApiError::RequestError),
-        };
-
-        let status = response.status();
-
-        if status.as_u16() == 200 || status.as_u16() == 204 {
-            info!(
-                "Client {} received response from {}/{} with status {}.",
-                self.user_client_id, self.base_url, endpoint, status
-            );
-        } else {
-            warn!(
-                "Client {} received response from {}/{} with status {}.",
-                self.user_client_id, self.base_url, endpoint, status
-            );
-        }
-
-        // match status code
-        match status.as_u16() {
-            200 => {
-                let json = match read_json(response).await {
-                    Ok(data) => data,
-                    Err(_) => {
-                        return Err(ApiError::ResponseParseError);
-                    }
-                };
-                return Ok((status, json));
-            }
-            204 => Ok((status, serde_json::json!({}))),
-            401 => {
-                // refresh access token if needed
-                {
-                    let mut auth_info = self.auth_info.write().await;
-                    auth_info.access_token = None;
-                }
-                self.validate_auth().await?;
-                return Err(ApiError::InvalidAccessToken);
-            }
-            429 => {
-                // backoff if rate limited
-                let mut backoff = self.backoff.write().await;
-                if let Some(retry_after) = response
-                    .headers()
-                    .get("Retry-After")
-                    .and_then(|header| header.to_str().ok())
-                    .and_then(|value| value.parse::<u64>().ok())
-                {
-                    *backoff = SystemTime::now() + Duration::from_secs(retry_after);
-                } else {
-                    *backoff = SystemTime::now() + Duration::from_secs(5);
-                    // default backoff
-                }
-
-                return Err(ApiError::ResponseError429);
-            }
-            _ => Err(errors::return_response_error(status)),
-        }
+        return self.send(Method::POST, endpoint, body, params).await;
     }
 
     // Method for sending PUT requests to the Spotify API
@@ -801,91 +707,7 @@ impl ApiProxy {
         body: Option<Value>,
         params: Option<HashMap<String, String>>,
     ) -> Result<(StatusCode, Value), ApiError> {
-        // backoff
-        self.execute_backoff().await?;
-
-        // check if access token is valid, if not, auth/reauth
-        self.validate_auth().await?;
-
-        // construct and send request
-        let url = format!("{}/{}", self.base_url, endpoint);
-
-        let access_token = {
-            let auth_info = self.auth_info.read().await;
-            auth_info.access_token.clone()
-        };
-
-        info!(
-            "Client {} sending request to {}/{}.",
-            self.user_client_id, self.base_url, endpoint
-        );
-
-        let request = self
-            .client
-            .put(&url)
-            .query(&params.unwrap_or_default())
-            .bearer_auth(access_token.ok_or(ApiError::NoAccessToken)?.0)
-            .json(&body.unwrap_or_default());
-
-        let response = match request.send().await {
-            Ok(res) => res,
-            Err(_) => return Err(ApiError::RequestError),
-        };
-
-        let status = response.status();
-
-        if status.as_u16() == 200 || status.as_u16() == 204 {
-            info!(
-                "Client {} received response from {}/{} with status {}.",
-                self.user_client_id, self.base_url, endpoint, status
-            );
-        } else {
-            warn!(
-                "Client {} received response from {}/{} with status {}.",
-                self.user_client_id, self.base_url, endpoint, status
-            );
-        }
-
-        // match status code
-        match status.as_u16() {
-            200 => {
-                let json = match read_json(response).await {
-                    Ok(data) => data,
-                    Err(_) => {
-                        return Err(ApiError::ResponseParseError);
-                    }
-                };
-                return Ok((status, json));
-            }
-            204 => Ok((status, serde_json::json!({}))),
-            401 => {
-                // refresh access token if needed
-                {
-                    let mut auth_info = self.auth_info.write().await;
-                    auth_info.access_token = None;
-                }
-                self.validate_auth().await?;
-                return Err(ApiError::InvalidAccessToken);
-            }
-            429 => {
-                // backoff if rate limited
-                let mut backoff = self.backoff.write().await;
-                if let Some(retry_after) = response
-                    .headers()
-                    .get("Retry-After")
-                    .and_then(|header| header.to_str().ok())
-                    .and_then(|value| value.parse::<u64>().ok())
-                {
-                    *backoff = SystemTime::now() + Duration::from_secs(retry_after);
-                } else {
-                    *backoff = SystemTime::now() + Duration::from_secs(5);
-                    // default backoff
-                }
-
-                return Err(ApiError::ResponseError429);
-            }
-            _ => Err(errors::return_response_error(status)),
-        }
+        return self.send(Method::PUT, endpoint, body, params).await;
     }
 
     // Method for sending DELETE requests to the Spotify API
@@ -895,91 +717,7 @@ impl ApiProxy {
         body: Option<Value>,
         params: Option<HashMap<String, String>>,
     ) -> Result<(StatusCode, Value), ApiError> {
-        // backoff
-        self.execute_backoff().await?;
-
-        // check if access token is valid, if not, auth/reauth
-        self.validate_auth().await?;
-
-        // construct and send request
-        let url = format!("{}/{}", self.base_url, endpoint);
-
-        let access_token = {
-            let auth_info = self.auth_info.read().await;
-            auth_info.access_token.clone()
-        };
-
-        info!(
-            "Client {} sending request to {}/{}.",
-            self.user_client_id, self.base_url, endpoint
-        );
-
-        let request = self
-            .client
-            .delete(&url)
-            .query(&params.unwrap_or_default())
-            .bearer_auth(access_token.ok_or(ApiError::NoAccessToken)?.0)
-            .json(&body.unwrap_or_default());
-
-        let response = match request.send().await {
-            Ok(res) => res,
-            Err(_) => return Err(ApiError::RequestError),
-        };
-
-        let status = response.status();
-
-        if status.as_u16() == 200 || status.as_u16() == 204 {
-            info!(
-                "Client {} received response from {}/{} with status {}.",
-                self.user_client_id, self.base_url, endpoint, status
-            );
-        } else {
-            warn!(
-                "Client {} received response from {}/{} with status {}.",
-                self.user_client_id, self.base_url, endpoint, status
-            );
-        }
-
-        // match status code
-        match status.as_u16() {
-            200 => {
-                let json = match read_json(response).await {
-                    Ok(data) => data,
-                    Err(_) => {
-                        return Err(ApiError::ResponseParseError);
-                    }
-                };
-                return Ok((status, json));
-            }
-            204 => Ok((status, serde_json::json!({}))),
-            401 => {
-                // refresh access token if needed
-                {
-                    let mut auth_info = self.auth_info.write().await;
-                    auth_info.access_token = None;
-                }
-                self.validate_auth().await?;
-                return Err(ApiError::InvalidAccessToken);
-            }
-            429 => {
-                // backoff if rate limited
-                let mut backoff = self.backoff.write().await;
-                if let Some(retry_after) = response
-                    .headers()
-                    .get("Retry-After")
-                    .and_then(|header| header.to_str().ok())
-                    .and_then(|value| value.parse::<u64>().ok())
-                {
-                    *backoff = SystemTime::now() + Duration::from_secs(retry_after);
-                } else {
-                    *backoff = SystemTime::now() + Duration::from_secs(5);
-                    // default backoff
-                }
-
-                return Err(ApiError::ResponseError429);
-            }
-            _ => Err(errors::return_response_error(status)),
-        }
+        return self.send(Method::DELETE, endpoint, body, params).await;
     }
 
     // Example method to get devices (for demonstration purposes)

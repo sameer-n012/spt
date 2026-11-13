@@ -142,7 +142,6 @@ impl DBManager {
     }
 
     pub async fn get_playlist(&self, uri: &str) -> Result<Option<serde_json::Value>, DBError> {
-
         // owner id is the spotify id, users.user_id is the account_id
         let row: Option<PlaylistRow> = sqlx::query_as(
             "SELECT p.name, p.description, p.public, p.collaborative, p.snapshot_id, \
@@ -188,7 +187,6 @@ impl DBManager {
     }
 
     pub async fn get_episode(&self, uri: &str) -> Result<Option<serde_json::Value>, DBError> {
-
         // episode_number is left out, spotify doesn't have it (always 0 when cached)
         let row: Option<(String, String, String, Option<String>, i64, bool)> = sqlx::query_as(
             "SELECT name, show_uri, release_date, description, duration_ms, explicit \

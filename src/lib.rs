@@ -6,6 +6,7 @@ pub mod server {
     }
     pub mod db {
         pub mod db_manager;
+        pub mod transaction_manager;
     }
 }
 
@@ -34,10 +35,8 @@ pub mod client {
     }
     pub mod core {
         pub mod playback_manager;
-        // pub mod playlist_manager;
-        // pub mod queue_manager;
-        // pub mod search_manager;
-        // pub mod status_manager;
-        // pub mod transaction_manager;
+        pub mod playlist_manager;
+        pub mod search_manager;
+        pub mod status_manager;
     }
 }
